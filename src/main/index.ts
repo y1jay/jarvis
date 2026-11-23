@@ -1,5 +1,5 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Notification, safeStorage, session, shell, systemPreferences } from 'electron'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, session, shell, systemPreferences, Tray } from 'electron'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { AuditLog } from './audit'
@@ -22,6 +22,7 @@ import { isAuthError, parseProviderIntent, parseSiteLoginIntent, parseVoiceInten
 import { Asker, resolveChoice, type QuestionKind } from './asker'
 import { DeviceHub, parseDeviceIntent, type Platform } from './devices'
 import { androidReleasePlaybook, parseReleaseIntent } from './release'
+import { DEFAULT_NAME, parseRenameIntent } from '../shared/wake'
 import { classifyApprovalPrompt, parseClassification, ruleApproval, type ApprovalDecision } from '../shared/approval'
 import {
   PROVIDER_LABEL,
@@ -37,19 +38,67 @@ import {
 } from '../shared/types'
 
 // __dirname 은 electron-vite 가 ESM 번들에 주입한다
-// ── E2E / 테스트용 격리 ─────────────────────────────────────────
-if (process.env.JARVIS_USER_DATA) app.setPath('userData', process.env.JARVIS_USER_DATA)
-if (process.env.JARVIS_E2E === '1') {
-  app.commandLine.appendSwitch('use-fake-device-for-media-stream')
-  app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
-  if (process.env.JARVIS_FAKE_AUDIO) {
-    app.commandLine.appendSwitch('use-file-for-fake-audio-capture', process.env.JARVIS_FAKE_AUDIO)
-    // 샌드박스된 오디오 서비스는 임의 경로 파일을 못 읽으므로 테스트에서만 in-process 로
-    app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess,AudioServiceSandbox')
-  }
+let win: BrowserWindow | null = null
+let tray: Tray | null = null
+let quitting = false
+const startHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
+
+function showWindow(): void {
+  if (!win) createWindow()
+  if (win!.isMinimized()) win!.restore()
+  win!.show()
+  win!.focus()
+  if (process.platform === 'darwin') app.focus({ steal: true })
 }
 
-let win: BrowserWindow | null = null
+function trayIcon(): Electron.NativeImage {
+  const base = app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'build')
+  const f = join(base, process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')
+  const img = existsSync(f) ? nativeImage.createFromPath(f) : nativeImage.createEmpty()
+  if (process.platform === 'darwin') img.setTemplateImage(true)
+  return img
+}
+
+function buildTray(): void {
+  if (!tray) {
+    tray = new Tray(trayIcon())
+    tray.setToolTip('J.A.R.V.I.S.')
+    tray.on('click', () => showWindow())
+  }
+  const s = settings.get()
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: `${s.assistantName} 열기`, click: () => showWindow() },
+      { label: '듣기 켜기/끄기', click: () => send('voice:toggle', {}) },
+      { type: 'separator' },
+      {
+        label: '로그인 시 자동 실행',
+        type: 'checkbox',
+        checked: s.launchAtLogin,
+        click: (item) => {
+          settings.update({ launchAtLogin: item.checked })
+          applyLoginItem()
+          audit.record({ action: 'settings.changed', provider: 'jarvis', detail: { keys: ['launchAtLogin'], after: { launchAtLogin: item.checked }, via: 'tray' } })
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '종료',
+        click: () => {
+          quitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+}
+
+/** 로그인 시 숨김 상태로 자동 실행 (설치된 앱에서만 — 개발 중에는 Electron 바이너리가 등록되므로 생략) */
+function applyLoginItem(): void {
+  if (!app.isPackaged) return
+  const on = settings.get().launchAtLogin
+  app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] })
+}
 let settings: SettingsStore
 let audit: AuditLog
 let secrets: SecretStore
@@ -172,7 +221,9 @@ function send(channel: string, payload: unknown): void {
 }
 
 function memoryText(): string {
-  return settings.get().learning.enabled ? memory.asPrompt() : ''
+  const name = settings.get().assistantName
+  const persona = name && name !== DEFAULT_NAME ? `[호칭] 사용자는 당신을 "${name}"(이)라고 부른다. 스스로를 ${name}(이)라고 소개한다.` : ''
+  return [persona, settings.get().learning.enabled ? memory.asPrompt() : ''].filter(Boolean).join('\n\n')
 }
 
 function ask(p: ProviderId, prompt: string): Promise<string> {
@@ -216,9 +267,7 @@ function loginProvider(p: ProviderId): Promise<boolean> {
   const inflight = loginInFlight.get(p)
   if (inflight) return inflight
   const run = (async () => {
-    // E2E 전용: 실제 브라우저 로그인 대신 실패 시뮬레이션
-    const fake = process.env.JARVIS_E2E === '1' && (process.env.JARVIS_FAKE_LOGIN_FAIL ?? '').split(',').includes(p)
-    const ok = fake ? await new Promise<boolean>((r) => setTimeout(() => r(false), 300)) : await auth.login(p, (line) => send('auth:log', { provider: p, line }))
+    const ok = await auth.login(p, (line) => send('auth:log', { provider: p, line }))
     if (ok && p === 'gemini') settings.update({ geminiUseGoogleLogin: true })
     audit.record({ action: 'auth.login', provider: p, detail: { success: ok, method: 'browser' } })
     authCache.delete(p)
@@ -458,6 +507,16 @@ async function handleRequest(job: JobInfo): Promise<void> {
   /** true 면 text 는 JARVIS 가 만든 지시문 → 아래 로컬 명령 해석(사이트/앱/열기)을 건너뛴다 */
   let generated = false
 
+  // 0) 이름 바꾸기: "이제부터 네 이름은 프라이데이야"
+  const newName = parseRenameIntent(text)
+  if (newName) {
+    const before = settings.get().assistantName
+    const next = settings.update({ assistantName: newName })
+    send('settings:changed', next)
+    audit.record({ action: 'settings.changed', provider: 'jarvis', detail: { keys: ['assistantName'], before: { assistantName: before }, after: { assistantName: newName }, via: 'command' } })
+    return void finishJob(job, `알겠습니다. 이제부터 "헤이 ${newName}" 또는 "${newName}"라고 불러 주세요. "헤이 자비스"도 계속 됩니다.`)
+  }
+
   // 1) 모델 연결/전환/해제
   const pi = parseProviderIntent(text)
   if (pi) {
@@ -671,6 +730,8 @@ function registerIpc(): void {
   h('settings:update', (patch: DeepPartial<JarvisSettings>) => {
     const before = settings.get()
     const next = settings.update(patch)
+    if (patch.launchAtLogin !== undefined) applyLoginItem()
+    if (patch.assistantName !== undefined || patch.launchAtLogin !== undefined) buildTray()
     if (patch.alwaysOnTop !== undefined) win?.setAlwaysOnTop(next.alwaysOnTop)
     audit.record({ action: 'settings.changed', provider: 'jarvis', detail: { keys: Object.keys(patch), before: pick(before, Object.keys(patch)), after: pick(next, Object.keys(patch)) } })
     return next
@@ -901,6 +962,7 @@ function registerIpc(): void {
   h('win:minimize', () => win?.minimize())
   h('win:toggleMaximize', () => (win?.isMaximized() ? win.unmaximize() : win?.maximize()))
   h('win:close', () => win?.close())
+  h('win:summon', () => showWindow())
   h('app:info', () => ({ platform: process.platform, version: app.getVersion(), userData: app.getPath('userData'), cwd: cwd() }))
 }
 
@@ -927,11 +989,22 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,
       autoplayPolicy: 'no-user-gesture-required',
+      // 창이 숨겨져 있어도 마이크 대기/음성 인식이 멈추지 않게
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false
     }
   })
-  win.once('ready-to-show', () => win?.show())
+  // 로그인 시 자동 실행이면 숨김 상태로 시작 (호출어로 부르면 뜬다)
+  win.once('ready-to-show', () => {
+    if (!startHidden) win?.show()
+  })
+  // 창을 닫아도 종료하지 않고 뒤에서 계속 듣는다 (완전 종료는 트레이/메뉴의 "종료")
+  win.on('close', (e) => {
+    if (quitting) return
+    e.preventDefault()
+    win?.hide()
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
@@ -944,6 +1017,10 @@ function createWindow(): void {
     pendingApprovals.clear()
   })
 }
+
+// 두 번 실행하면 기존 창을 띄운다
+if (!app.requestSingleInstanceLock()) app.quit()
+else app.on('second-instance', () => showWindow())
 
 app.whenReady().then(() => {
   const ud = app.getPath('userData')
@@ -966,28 +1043,28 @@ app.whenReady().then(() => {
 
   registerIpc()
   createWindow()
+  buildTray()
+  applyLoginItem()
   // 프로젝트 후보 스캔을 미리 해 둔다 (첫 "열어줘" 응답 지연 방지)
   setTimeout(() => finder.list(), 4000)
 
   globalShortcut.register('CommandOrControl+Shift+J', () => {
-    if (!win) createWindow()
-    win?.show()
-    win?.focus()
+    showWindow()
     send('jarvis:summon', {})
   })
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  app.on('activate', () => showWindow())
 })
 
+app.on('before-quit', () => {
+  quitting = true
+})
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   asker.cancelAll()
   void devices.stopStream()
 })
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+// 창이 없어도(숨김) 트레이에서 계속 실행 — 종료는 트레이 메뉴의 "종료"
+app.on('window-all-closed', () => undefined)
 
 export type { SessionInfo, AgentEvent }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { applyEvent, assistantTurn, finalAnswer } from '../../src/renderer/src/lib/chat'
 import { isLikelyHallucination, matchWakeWord, speakableText } from '../../src/renderer/src/voice/text'
 import { analyzeHand, GestureTracker, type P } from '../../src/renderer/src/vision/gestures'
-import { DEFAULT_SETTINGS } from '../../src/main/settings'
+import { effectiveWakeWords } from '../../src/shared/wake'
 
 describe('chat 리듀서', () => {
   it('스트리밍 delta 누적 → 도구 → 결과', () => {
@@ -29,7 +29,7 @@ describe('chat 리듀서', () => {
 })
 
 describe('호출어', () => {
-  const W = DEFAULT_SETTINGS.voice.wakeWords
+  const W = effectiveWakeWords('자비스')
   it.each([
     ['자비스, 오늘 날씨 어때?', '오늘 날씨 어때?'],
     ['자비스야 커밋해줘', '커밋해줘'],

@@ -12,16 +12,21 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   geminiUseGoogleLogin: true,
   voice: {
     wakeWordEnabled: true,
-    wakeWords: ['자비스', '쟈비스', '자비쓰', 'jarvis', 'javis'],
+    // 추가 호출어 (기본 "자비스"와 assistantName 은 자동 포함)
+    wakeWords: [],
     ttsEnabled: true,
     ttsVoice: null,
     ttsRate: 1.05,
     ttsPitch: 0.95,
     sttModel: 'onnx-community/whisper-small',
-    language: 'korean'
+    language: 'korean',
+    inputDeviceId: null
   },
   camera: { enabled: false, deviceId: null },
   alwaysOnTop: false,
+  assistantName: '자비스',
+  alwaysListen: true,
+  launchAtLogin: true,
   learning: { enabled: true }
 }
 

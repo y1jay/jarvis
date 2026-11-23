@@ -82,13 +82,22 @@ function makeVoiceWav(sentence) {
 
 // 여러 번 띄워도 Whisper 모델 캐시를 재사용하도록 userData 공유
 const userData = mkdtempSync(join(tmpdir(), 'jarvis-e2e-ud-'))
+// 기존 시나리오는 마이크 버튼을 직접 누르므로 '항상 듣기'는 끈 상태로 시작
+writeFileSync(join(userData, 'settings.json'), JSON.stringify({ alwaysListen: false }))
 const baseEnv = { ...process.env }
 delete baseEnv.ELECTRON_RUN_AS_NODE
-const launch = (extra = {}) => electron.launch({ executablePath: require('electron'), args: [root], cwd: root, env: { ...baseEnv, JARVIS_E2E: '1', JARVIS_USER_DATA: userData, JARVIS_FAKE_LOGIN_FAIL: 'gemini', ...extra } })
+// 테스트 전용 실행 옵션: 앱 코드에는 테스트 장치가 없고, Electron/Chromium 표준 옵션으로만 격리한다
+const isolate = (userData, wav) => [
+  `--user-data-dir=${userData}`,
+  '--use-fake-device-for-media-stream',
+  '--use-fake-ui-for-media-stream',
+  ...(wav ? [`--use-file-for-fake-audio-capture=${wav}`, '--disable-features=AudioServiceOutOfProcess,AudioServiceSandbox'] : [])
+]
+const launch = (wav) => electron.launch({ executablePath: require('electron'), args: [root, ...isolate(userData, wav)], cwd: root, env: baseEnv })
 const audit = () => readFileSync(join(userData, 'audit', 'audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
 
 const voiceWav = mac ? makeVoiceWav('자비스, 일 더하기 일은 얼마야? 숫자만 말해.') : null
-const app = await launch(voiceWav ? { JARVIS_FAKE_AUDIO: voiceWav } : {})
+const app = await launch(voiceWav)
 const page = await app.firstWindow()
 const logs = []
 page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`))
@@ -160,16 +169,6 @@ await step('창 표시 + 홀로그램 렌더링 (캔버스 픽셀 확인)', asyn
 await step('모델 연결 상태: "모델 연결 상태 알려줘" (AI 없이 JARVIS 가 직접)', async () => {
   const r = await ask('모델 연결 상태 알려줘')
   assert(/Claude: 연결됨/.test(r.text) && /GPT \(Codex\): 연결됨/.test(r.text) && /Gemini: 끊김/.test(r.text), r.text)
-})
-
-await step('끊긴 모델로 전환 → JARVIS 가 스스로 로그인 시도 + 안내 (Gemini, 브라우저 대신 실패 시뮬레이션)', async () => {
-  const r = await ask('제미나이로 바꿔줘')
-  assert(/연결이 끊겨 있습니다. 로그인 창을 열겠습니다/.test(r.text), r.text)
-  assert(/로그인이 완료되지 않았습니다/.test(r.text), r.text)
-  assert(audit().some((e) => e.action === 'auth.login' && e.provider === 'gemini'), '로그인 시도 이력 없음')
-  await page.screenshot({ path: join(art, '02-model-connect.png') })
-  const back = await ask('클로드로 바꿔줘')
-  assert(/Claude 로 작업합니다/.test(back.text), back.text)
 })
 
 await step('말로 프로젝트 열기: "Jarvis 프로젝트 열어줘" (실제 폴더 스캔)', async () => {
@@ -341,7 +340,7 @@ await app.close()
 
 // ── 음성 승인: 자연어 대답 ──
 async function voiceApproval(sentence, expectApproved, tag) {
-  const a = await launch({ JARVIS_FAKE_AUDIO: makeVoiceWav(sentence) })
+  const a = await launch(makeVoiceWav(sentence))
   const pg = await a.firstWindow()
   try {
     await pg.waitForSelector('.app')

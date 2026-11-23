@@ -17,6 +17,13 @@ const STT_MODELS: Array<[string, string]> = [
 
 export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettings; onSettings: (s: JarvisSettings) => void }): ReactNode {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([])
+  useEffect(() => {
+    const load = (): void => void navigator.mediaDevices.enumerateDevices().then((d) => setMics(d.filter((x) => x.kind === 'audioinput' && x.deviceId !== 'default')))
+    load()
+    navigator.mediaDevices.addEventListener('devicechange', load)
+    return () => navigator.mediaDevices.removeEventListener('devicechange', load)
+  }, [])
   useEffect(() => {
     const load = (): void => setVoices(speechSynthesis.getVoices())
     load()
@@ -56,6 +63,23 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
       </div>
 
       <div className="set-group">
+        <div className="set-title">이름 · 호출</div>
+        <label className="set-row">
+          <span>이름</span>
+          <input data-testid="assistant-name" defaultValue={settings.assistantName} onBlur={(e) => e.target.value.trim() && void up({ assistantName: e.target.value.trim() })} />
+        </label>
+        <div className="muted small">"헤이 {settings.assistantName}", "{settings.assistantName}" 또는 "헤이 자비스"로 부르면 창이 뜨고 명령을 받습니다. 말로 "이제부터 네 이름은 ○○야"라고 해도 됩니다.</div>
+        <label className="set-check">
+          <input type="checkbox" checked={settings.alwaysListen} onChange={(e) => void up({ alwaysListen: e.target.checked })} />
+          항상 듣기 (앱이 켜지면 바로 호출어 대기, 창을 닫아도 계속)
+        </label>
+        <label className="set-check">
+          <input type="checkbox" checked={settings.launchAtLogin} onChange={(e) => void up({ launchAtLogin: e.target.checked })} />
+          로그인 시 자동 실행 (숨김 상태로 대기)
+        </label>
+      </div>
+
+      <div className="set-group">
         <div className="set-title">음성</div>
         <label className="set-check">
           <input type="checkbox" checked={settings.voice.wakeWordEnabled} onChange={(e) => void up({ voice: { wakeWordEnabled: e.target.checked } })} />
@@ -65,6 +89,18 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
           <input type="checkbox" checked={settings.voice.ttsEnabled} onChange={(e) => void up({ voice: { ttsEnabled: e.target.checked } })} />
           음성으로 답변
         </label>
+        <label className="set-row">
+          <span>마이크</span>
+          <select data-testid="mic-select" value={settings.voice.inputDeviceId ?? ''} onChange={(e) => void up({ voice: { inputDeviceId: e.target.value || null } })}>
+            <option value="">시스템 기본</option>
+            {mics.map((m) => (
+              <option key={m.deviceId} value={m.deviceId}>
+                {m.label || '마이크'}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="muted small">블루투스 헤드셋 마이크는 소리가 작게 들어올 수 있습니다. 잘 안 들리면 맥북 내장 마이크를 골라 보세요. 바꾸면 마이크를 껐다 켜야 적용됩니다.</div>
         <label className="set-row">
           <span>목소리</span>
           <select value={settings.voice.ttsVoice ?? ''} onChange={(e) => void up({ voice: { ttsVoice: e.target.value || null } })}>
@@ -91,7 +127,7 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
           </select>
         </label>
         <label className="set-row">
-          <span>호출어</span>
+          <span>추가 호출어</span>
           <input defaultValue={settings.voice.wakeWords.join(', ')} onBlur={(e) => void up({ voice: { wakeWords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } })} />
         </label>
         <div className="muted small">인식 모델 변경은 앱 재시작 후 적용됩니다. 음성 인식은 이 컴퓨터에서 로컬로 실행됩니다.</div>

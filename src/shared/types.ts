@@ -116,12 +116,20 @@ export interface JarvisSettings {
     ttsPitch: number
     sttModel: string
     language: string
+    /** 마이크 장치 (null = 시스템 기본) */
+    inputDeviceId: string | null
   }
   camera: {
     enabled: boolean
     deviceId: string | null
   }
   alwaysOnTop: boolean
+  /** 부르는 이름 ("헤이 ○○", "○○") — "자비스" 는 항상 함께 동작 */
+  assistantName: string
+  /** 앱이 켜지면 바로 마이크 대기 (창을 닫아도 뒤에서 듣는다) */
+  alwaysListen: boolean
+  /** 로그인 시 자동 실행 (숨김 상태로 대기) */
+  launchAtLogin: boolean
   /** 대화에서 사용자 정보를 학습해 기억할지 */
   learning: { enabled: boolean }
 }

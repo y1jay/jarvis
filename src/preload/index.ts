@@ -149,11 +149,13 @@ const api = {
   win: {
     minimize: () => invoke<void>('win:minimize'),
     toggleMaximize: () => invoke<void>('win:toggleMaximize'),
-    close: () => invoke<void>('win:close')
+    close: () => invoke<void>('win:close'),
+    summon: () => invoke<void>('win:summon')
   },
   app: {
     info: () => invoke<{ platform: string; version: string; userData: string; cwd: string }>('app:info'),
-    onSummon: (cb: () => void) => on('jarvis:summon', cb)
+    onSummon: (cb: () => void) => on('jarvis:summon', cb),
+    onToggleListen: (cb: () => void) => on('voice:toggle', cb)
   }
 }
 

@@ -7,6 +7,7 @@ import { HandTracker } from './vision/handTracker'
 import type { HandState } from './vision/gestures'
 import { VoiceEngine, type VoicePhase } from './voice/VoiceEngine'
 import { matchWakeWord } from './voice/text'
+import { effectiveWakeWords } from '../../shared/wake'
 import { ChatPanel } from './components/ChatPanel'
 import { JarvisThread } from './components/JarvisThread'
 import { SessionList } from './components/SessionList'
@@ -24,7 +25,7 @@ type Tab = 'chat' | 'git' | 'history' | 'memory' | 'settings'
 const PHASE_TEXT: Record<VoicePhase, string> = {
   off: '음성 꺼짐',
   loading: '음성 시스템 준비 중',
-  sleeping: '"자비스" 대기 중',
+  sleeping: '"헤이 자비스" 대기 중',
   awake: '듣고 있습니다',
   recording: '듣고 있습니다',
   transcribing: '인식 중',
@@ -59,6 +60,7 @@ export function App(): ReactNode {
   const [cameraOn, setCameraOn] = useState(false)
   const [hands, setHands] = useState<HandState[]>([])
   const [voiceProgress, setVoiceProgress] = useState('')
+  const [micLevel, setMicLevel] = useState(0)
   const [platform, setPlatform] = useState('')
   const [questions, setQuestions] = useState<Q[]>([])
   // 홀로그램은 항상 기본 화면. 웹/기기는 그 위에 뜨는 팝업
@@ -110,6 +112,17 @@ export function App(): ReactNode {
       setJobs(h.map((r) => ({ id: r.jobId, prompt: r.prompt, answer: r.answer, status: r.status === 'error' ? 'error' : 'done', tasks: r.tasks.map((t, i) => ({ id: `${r.jobId}-${i}`, sessionId: t.sessionId, title: t.title, instruction: t.instruction, status: t.status as 'done', after: [] })), notes: [], via: r.via === 'voice' ? 'voice' : 'text', createdAt: Date.parse(r.ts) })))
     )
   }, [])
+
+  // 항상 듣기: 앱이 켜지면 바로 호출어 대기 (창이 숨겨져 있어도 계속 듣는다)
+  const autoStarted = useRef(false)
+  useEffect(() => {
+    if (!settings || autoStarted.current || !settings.alwaysListen) return
+    autoStarted.current = true
+    void toggleVoice()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings])
+  // 트레이 메뉴의 듣기 켜기/끄기
+  useEffect(() => window.jarvis.app.onToggleListen(() => void toggleVoice()), [])
 
   // 홀로그램은 스테이지 DOM 이 생긴 뒤(설정 로드 후) 생성
   const ready = !!settings
@@ -214,7 +227,7 @@ export function App(): ReactNode {
       return
     }
     voice.current ??= new VoiceEngine(
-      { model: s.voice.sttModel, language: s.voice.language, wakeWords: s.voice.wakeWords, wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch },
+      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId },
       {
         onPhase: (p) => {
           setPhase(p)
@@ -222,10 +235,17 @@ export function App(): ReactNode {
           else if (p === 'transcribing') holo.current?.setState('thinking')
           else if ((p === 'sleeping' || p === 'off') && !['thinking', 'speaking'].includes(holo.current?.getState() ?? '')) holo.current?.setState('idle')
         },
-        onLevel: (v) => holo.current?.setLevel(v),
+        onLevel: (v) => {
+          holo.current?.setLevel(v)
+          setMicLevel((p) => (Math.abs(p - v) > 0.03 ? v : p))
+        },
         onTranscript: (t) => setTranscript(t),
-        onCommand: (t) => void sendRef.current(t, 'voice'),
+        onCommand: (t) => {
+          void window.jarvis.win.summon()
+          void sendRef.current(t, 'voice')
+        },
         onWake: () => {
+          void window.jarvis.win.summon()
           setTranscript('')
           void voice.current?.speak('네, 말씀하세요.')
         },
@@ -235,9 +255,18 @@ export function App(): ReactNode {
     )
     await voice.current.start()
   }
+  const lastMic = useRef<string | null | undefined>(undefined)
   useEffect(() => {
     if (!settings || !voice.current) return
-    voice.current.updateOptions({ wakeWords: settings.voice.wakeWords, wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch })
+    // 마이크 장치를 바꾸면 바로 다시 연결
+    const mic = settings.voice.inputDeviceId
+    if (lastMic.current !== undefined && lastMic.current !== mic && voice.current.listening) {
+      voice.current.updateOptions({ inputDeviceId: mic })
+      voice.current.stop()
+      void voice.current.start()
+    }
+    lastMic.current = mic
+    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch })
   }, [settings])
 
   // ── 카메라 + 손 추적 ──
@@ -302,7 +331,7 @@ export function App(): ReactNode {
     let deciding = false
     const token = v.listenFor(async (raw) => {
       if (deciding) return
-      const w = matchWakeWord(raw, settingsRef.current?.voice.wakeWords ?? [])
+      const w = matchWakeWord(raw, effectiveWakeWords(settingsRef.current?.assistantName ?? '자비스', settingsRef.current?.voice.wakeWords ?? []))
       const text = (w.matched ? w.command || raw : raw).trim()
       if (!text || SELF_ECHO.test(text)) return
       deciding = true
@@ -338,7 +367,7 @@ export function App(): ReactNode {
     const v = voice.current
     if (!q || !v || !v.listening || approvalsRef.current.length || q.kind === 'secret') return
     const token = v.listenFor((raw) => {
-      const w = matchWakeWord(raw, settingsRef.current?.voice.wakeWords ?? [])
+      const w = matchWakeWord(raw, effectiveWakeWords(settingsRef.current?.assistantName ?? '자비스', settingsRef.current?.voice.wakeWords ?? []))
       const text = (w.matched ? w.command || raw : raw).trim()
       if (!text || SELF_ECHO.test(text) || questionsRef.current[0]?.id !== q.id) return
       void window.jarvis.question.answer(q.id, text)
@@ -354,7 +383,8 @@ export function App(): ReactNode {
 
   if (!settings) return <div className="boot">J.A.R.V.I.S. 초기화 중…</div>
 
-  const holoLabel = busy ? `처리 중${sessions.filter((x) => x.status === 'running').length > 1 ? ` · 세션 ${sessions.filter((x) => x.status === 'running').length}개 동시 작업` : ''}` : PHASE_TEXT[phase]
+  const sleepingLabel = `"헤이 ${settings.assistantName}" 대기 중`
+  const holoLabel = !busy && phase === 'sleeping' ? sleepingLabel : busy ? `처리 중${sessions.filter((x) => x.status === 'running').length > 1 ? ` · 세션 ${sessions.filter((x) => x.status === 'running').length}개 동시 작업` : ''}` : PHASE_TEXT[phase]
   const viewingSession = viewing ? sessions.find((x) => x.id === viewing) ?? null : null
   const projectName = settings.projectDir ? settings.projectDir.split(/[\\/]/).pop() : '프로젝트 없음'
 
@@ -448,6 +478,11 @@ export function App(): ReactNode {
             <div className="holo-phase">{holoLabel}</div>
             {transcript && <div className="holo-transcript">“{transcript}”</div>}
             {voiceProgress && phase !== 'off' && <div className="holo-progress">{voiceProgress}</div>}
+            {phase !== 'off' && phase !== 'speaking' && (
+              <div className="mic-meter" title="마이크 입력 크기" data-testid="mic-meter">
+                <div style={{ width: `${Math.round(micLevel * 100)}%` }} />
+              </div>
+            )}
           </div>
           <div className="stage-controls">
             <button className={`orb ${phase !== 'off' ? 'orb-on' : ''}`} data-testid="mic-toggle" onClick={() => void toggleVoice()} title="음성 켜기/끄기">

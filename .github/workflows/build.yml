@@ -1,12 +1,16 @@
-# Mac / Windows 설치 파일 빌드. 플랫폼별 네이티브 바이너리(Claude/Codex)가 필요하므로 각 OS 러너에서 npm ci 후 빌드한다.
+# Mac / Windows 설치 파일 빌드. 태그(v*)를 올리면 GitHub Releases 에 설치 파일이 자동으로 첨부된다.
+# 플랫폼별 네이티브 바이너리(Claude/Codex)가 필요하므로 각 OS 러너에서 npm ci 후 빌드한다.
 name: build
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
+permissions:
+  contents: write
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -25,5 +29,12 @@ jobs:
         with:
           name: jarvis-${{ matrix.os }}
           path: |
+            dist/*.dmg
+            dist/*.exe
+      - name: 릴리스에 첨부
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
             dist/*.dmg
             dist/*.exe

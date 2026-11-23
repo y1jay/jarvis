@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { startMockConsole } from './mock-play-console.mjs'
 
 const require = createRequire(import.meta.url)
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -33,11 +32,18 @@ writeFileSync(join(appDir, 'build', 'app-release.aab'), 'PK-dummy-aab')
 sh(appDir, 'add', '.')
 sh(appDir, 'commit', '-qm', 'feat: 결제 화면 개선')
 
-const mock = await startMockConsole()
 const userData = mkdtempSync(join(tmpdir(), 'jarvis-e2e-auto-ud-'))
-const env = { ...process.env, JARVIS_E2E: '1', JARVIS_USER_DATA: userData, JARVIS_PLAY_CONSOLE_URL: mock.url }
+writeFileSync(join(userData, 'settings.json'), JSON.stringify({ alwaysListen: false }))
+// 테스트 전용 실행 옵션: 앱 코드에는 테스트 장치가 없고, Electron/Chromium 표준 옵션으로만 격리한다
+const isolate = (userData, wav) => [
+  `--user-data-dir=${userData}`,
+  '--use-fake-device-for-media-stream',
+  '--use-fake-ui-for-media-stream',
+  ...(wav ? [`--use-file-for-fake-audio-capture=${wav}`, '--disable-features=AudioServiceOutOfProcess,AudioServiceSandbox'] : [])
+]
+const env = { ...process.env }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ executablePath: require('electron'), args: [root], cwd: root, env })
+const app = await electron.launch({ executablePath: require('electron'), args: [root, ...isolate(userData)], cwd: root, env })
 const page = await app.firstWindow()
 await page.waitForSelector('.app', { timeout: 30000 })
 const audit = () => readFileSync(join(userData, 'audit', 'audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
@@ -169,93 +175,8 @@ if (want('android')) {
   await step('안드로이드 에뮬레이터: 팝업에 화면 → 탭 → 홈 → 종료', () => deviceStep('에뮬레이터 Pixel_8 띄워줘', '에뮬레이터 꺼줘', 'android'))
 }
 
-if (want('claude') && process.platform === 'darwin') {
-  await step('메시지 보내기 흐름: 입력 → 화면 캡처와 함께 승인 요청 → 거부 시 전송 안 함 (TextEdit 가짜 메신저)', async () => {
-    execFileSync('osascript', ['-e', 'tell application "TextEdit" to make new document', '-e', 'tell application "TextEdit" to activate'])
-    const n = await submit('mcp__jarvis__send_message 도구를 app="textedit-test", to="테스트", message="자비스 전송 테스트" 로 한 번만 호출하고 결과만 한 줄로 알려줘.')
-    await page.waitForSelector('[data-testid=approval-modal]', { timeout: 180000 })
-    const title = await page.textContent('.modal-title')
-    assert(/메시지 전송/.test(title), title)
-    const detail = await page.textContent('.modal-detail')
-    assert((await page.$('[data-testid=approval-image]')) || /화면 기록 권한/.test(detail), '화면 캡처도 권한 안내도 없음')
-    if (!(await page.$('[data-testid=approval-image]'))) console.log('   (이 실행 환경은 화면 기록 권한이 없어 캡처 대신 권한 안내 표시)')
-    await page.screenshot({ path: join(art, '23-message-approval.png') })
-    await page.click('[data-testid=approval-deny]')
-    let m = null
-    for (let i = 0; i < 120 && !m; i++) {
-      m = audit().filter((e) => e.action === 'message.send').pop() ?? null
-      if (!m) await page.waitForTimeout(500)
-    }
-    for (let i = 0; i < 240 && !(await jobDone(n)); i++) await page.waitForTimeout(500)
-    assert(m && m.detail.sent === false, `전송 이력: ${JSON.stringify(m)}`)
-    execFileSync('osascript', ['-e', 'tell application "TextEdit" to close every document saving no'])
-  })
-
-  await step('안드로이드 출시 (가짜 Play Console): 로그인 계정 질문 → 비밀번호 보안 입력 → 트랙 질문 → AAB 업로드 → 노트 확인 → 최종 승인 → 검토 전송', async () => {
-    await submit(`${appDir} 열어줘`)
-    await page.waitForTimeout(1500)
-    const n = await submit('안드로이드 출시해')
-    const SECRET = 'S3cret-PW-!92'
-    const answered = []
-    let approvedFinal = false
-    const t0 = Date.now()
-    while (Date.now() - t0 < 15 * 60_000) {
-      if (await jobDone(n)) break
-      const modal = await page.$('[data-testid=approval-modal]')
-      if (modal) {
-        const t = await page.textContent('.modal-title')
-        const d = await page.textContent('.modal-detail')
-        await page.waitForTimeout(900)
-        if (/최종 웹 동작/.test(t)) {
-          await page.screenshot({ path: join(art, '24-release-final-approval.png') })
-          approvedFinal = true
-          answered.push(`APPROVE:${d.split('\n')[0]}`)
-          await page.click('[data-testid=approval-approve]')
-        } else if (/push|푸시|위험/.test(t + d)) {
-          answered.push(`DENY:${t}`)
-          await page.click('[data-testid=approval-deny]')
-        } else {
-          answered.push(`APPROVE-tool:${t}`)
-          await page.click('[data-testid=approval-approve]')
-        }
-        continue
-      }
-      const q = await page.$('[data-testid=question]')
-      if (q) {
-        const kind = await q.getAttribute('data-kind')
-        const text = await page.textContent('[data-testid=question] .question-text')
-        let a = '응 그대로 진행해'
-        if (kind === 'secret') a = SECRET
-        else if (kind === 'code') a = '123456'
-        else if (/트랙/.test(text)) a = '비공개 테스트'
-        else if (/계정/.test(text)) a = 'jarvis.test@example.com'
-        else if (/(파일|빌드|aab)/i.test(text)) a = '이미 있는 build/app-release.aab 파일 그대로 써'
-        else if (/(버전|version)/i.test(text)) a = '지금 버전 그대로 진행해'
-        else if (/(앱|프로젝트)/.test(text)) a = 'Mock App (com.example.mockapp)'
-        answered.push(`Q[${kind}] ${text.slice(0, 60)} → ${kind === 'secret' ? '***' : a}`)
-        if (/트랙/.test(text)) await page.screenshot({ path: join(art, '25-release-track-question.png') })
-        await answerQuestion(a)
-        continue
-      }
-      await page.waitForTimeout(700)
-    }
-    console.log('   진행:', answered.join(' | '))
-    const j = await lastJob()
-    console.log('   답:', j.text.replace(/\n+/g, ' / ').slice(-300))
-    assert(mock.state.signedInAs === 'jarvis.test@example.com', `로그인 계정: ${mock.state.signedInAs}`)
-    assert(mock.state.password === SECRET, '비밀번호가 보안 입력값과 다름')
-    assert(mock.state.track === 'closed', `트랙: ${mock.state.track}`)
-    assert(mock.state.uploaded === 'app-release.aab', `업로드: ${mock.state.uploaded}`)
-    assert(mock.state.notes && mock.state.notes.length > 0, '출시 노트 없음')
-    assert(approvedFinal && mock.state.submitted, '최종 전송 안 됨')
-    // 비밀번호가 어디에도 기록되지 않았는지
-    for (const f of ['audit/audit.jsonl', 'memory/conversations.jsonl']) {
-      const c = readFileSync(join(userData, f), 'utf8')
-      assert(!c.includes(SECRET), `${f} 에 비밀번호 노출`)
-    }
-    await page.screenshot({ path: join(art, '26-release-done.png') })
-  })
-}
+// 메시지 전송(가짜 메신저)·Play Console 출시(가짜 콘솔) 단계는 앱에서 테스트 장치를 제거하면서 삭제됨.
+// 해당 로직은 단위 테스트(autonomy.test.ts)로 검증한다.
 
 await step('안전: 실제 Jarvis 폴더에서 세션/작업이 일어나지 않음', async () => {
   const bad = audit().filter((e) => (e.project ?? '').endsWith('/Private/Jarvis') && ['session.open', 'file.modified', 'approval.requested', 'git.commit'].includes(e.action))
@@ -263,6 +184,5 @@ await step('안전: 실제 Jarvis 폴더에서 세션/작업이 일어나지 않
 })
 
 await app.close()
-mock.close()
 console.log(failures ? `\n${failures} 단계 실패` : '\n모든 자율 기능 E2E 통과')
 process.exit(failures ? 1 : 0)

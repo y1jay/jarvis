@@ -1,7 +1,7 @@
 // "안드로이드 출시해" → Google Play Console 출시 플레이북. Claude 가 JARVIS 도구(브라우저/터미널/되묻기)로 수행한다.
 // 실제 출시와 직결되므로: 트랙 선택·출시 노트·최종 전송은 반드시 사용자 확인을 거친다.
 
-export const PLAY_CONSOLE_URL = (): string => process.env.JARVIS_PLAY_CONSOLE_URL || 'https://play.google.com/console'
+export const PLAY_CONSOLE_URL = (): string => 'https://play.google.com/console'
 
 export function parseReleaseIntent(text: string): { platform: 'android'; hint: string } | null {
   const t = text.trim().replace(/[.!]+$/, '')

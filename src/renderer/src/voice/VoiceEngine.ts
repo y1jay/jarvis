@@ -11,6 +11,8 @@ export interface VoiceOptions {
   ttsVoice: string | null
   ttsRate: number
   ttsPitch?: number
+  /** 사용할 마이크 (없으면 시스템 기본) */
+  inputDeviceId?: string | null
 }
 
 export interface VoiceCallbacks {
@@ -73,10 +75,10 @@ export class VoiceEngine {
     w.onmessage = (ev) => {
       const m = ev.data
       if (m.type === 'progress') {
-        if (m.status === 'progress' && m.file) this.cb.onProgress(`음성 모델 다운로드 ${m.file} ${Math.round(m.progress ?? 0)}%`)
+        if (m.status === 'progress' && m.file) this.cb.onProgress(`처음 한 번 음성 인식 모델을 받는 중 ${Math.round(m.progress ?? 0)}% — 받는 동안은 호출을 못 들어요`)
       } else if (m.type === 'ready') {
         this.ready = true
-        this.cb.onProgress(`음성 인식 준비 완료 (${m.device})`)
+        this.cb.onProgress(`음성 인식 준비 완료 (${m.device}) — 이제 부르시면 됩니다`)
       } else if (m.type === 'result') {
         this.pending.get(m.id)?.(m.text)
         this.pending.delete(m.id)
@@ -93,14 +95,23 @@ export class VoiceEngine {
     return w
   }
 
-  /** 마이크를 켠다. wakeWordEnabled 면 '자비스' 대기, 아니면 대화 모드 */
+  /** 마이크를 켠다. wakeWordEnabled 면 호출어(헤이 자비스 등) 대기, 아니면 대화 모드 */
   async start(): Promise<void> {
     if (this.stream) return
     this.setPhase('loading')
     this.ensureWorker()
     try {
       await window.jarvis.media.request('microphone')
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } })
+      const audio: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
+      if (this.opts.inputDeviceId) audio.deviceId = { exact: this.opts.inputDeviceId }
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio })
+      } catch (e) {
+        // 고른 마이크가 사라졌으면(블루투스 해제 등) 기본 마이크로
+        if (!this.opts.inputDeviceId) throw e
+        delete audio.deviceId
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio })
+      }
     } catch (e) {
       this.setPhase('off')
       this.cb.onError(`마이크를 사용할 수 없습니다: ${(e as Error).message}`)
@@ -185,13 +196,14 @@ export class VoiceEngine {
     let sum = 0
     for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
     const rms = Math.sqrt(sum / buf.length)
-    this.cb.onLevel(Math.min(1, rms * 12))
+    this.cb.onLevel(Math.min(1, rms * 20))
     if (this.phase === 'speaking' || this.phase === 'transcribing' || this.phase === 'loading') return
 
     const frameMs = (buf.length / SR) * 1000
     if (!this.recording && performance.now() - this.speakEndedAt < 700) return
     if (!this.recording) this.noise = this.noise * 0.97 + rms * 0.03
-    const threshold = Math.max(0.012, this.noise * 3)
+    // 블루투스 헤드셋처럼 입력이 작은 마이크도 잡히도록 낮은 하한 + 주변 소음 대비 2.5배
+    const threshold = Math.max(0.005, this.noise * 2.5)
 
     if (rms > threshold) {
       this.speechFrames++

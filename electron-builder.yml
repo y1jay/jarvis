@@ -3,9 +3,18 @@ productName: JARVIS
 directories:
   output: dist
   buildResources: build
+icon: build/icon.png
 files:
   - out/**
   - package.json
+# 메뉴바/트레이 아이콘
+extraResources:
+  - from: build/trayTemplate.png
+    to: trayTemplate.png
+  - from: build/trayTemplate@2x.png
+    to: trayTemplate@2x.png
+  - from: build/tray.png
+    to: tray.png
 # 공식 CLI / Agent SDK 는 네이티브 바이너리를 실행하므로 asar 밖으로 풀어 둔다
 asarUnpack:
   - node_modules/@anthropic-ai/**
@@ -13,14 +22,17 @@ asarUnpack:
   - node_modules/@google/gemini-cli/**
 mac:
   category: public.app-category.productivity
+  # Apple Silicon. (Intel 맥용은 x64 네이티브 바이너리가 따로 필요)
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
   hardenedRuntime: true
   extendInfo:
     NSCameraUsageDescription: JARVIS 는 손 제스처 인식과 홀로그램 표시를 위해 카메라를 사용합니다.
-    NSMicrophoneUsageDescription: JARVIS 는 "자비스" 음성 명령을 듣기 위해 마이크를 사용합니다.
-    NSAppleEventsUsageDescription: JARVIS 는 다른 앱을 열고 닫기 위해 시스템 이벤트를 사용합니다.
+    NSMicrophoneUsageDescription: JARVIS 는 "헤이 자비스" 음성 호출을 듣기 위해 마이크를 사용합니다.
+    NSAppleEventsUsageDescription: JARVIS 는 다른 앱을 열고 닫고 조작하기 위해 시스템 이벤트를 사용합니다.
+dmg:
+  title: JARVIS
 win:
   target:
     - target: nsis
@@ -28,4 +40,7 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
   shortcutName: JARVIS
+  runAfterFinish: true

@@ -118,8 +118,6 @@ export const MESSENGERS: Record<string, MessengerProfile> = {
 
 export function resolveMessenger(q: string): MessengerProfile | null {
   const s = q.toLowerCase().replace(/\s/g, '')
-  // E2E 전용 가짜 메신저 (실제 메시지를 보내지 않고 흐름만 검증)
-  if (process.env.JARVIS_E2E === '1' && s === 'textedit-test') return { key: 'textedit-test', name: 'TextEdit(테스트)', apps: ['TextEdit'], searchKey: `${MOD}+f`, openDelay: 500 }
   if (/(카톡|카카오|kakao)/.test(s)) return MESSENGERS.kakaotalk
   if (/(슬랙|slack)/.test(s)) return MESSENGERS.slack
   return null
