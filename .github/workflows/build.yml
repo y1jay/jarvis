@@ -1,0 +1,29 @@
+# Mac / Windows 설치 파일 빌드. 플랫폼별 네이티브 바이너리(Claude/Codex)가 필요하므로 각 OS 러너에서 npm ci 후 빌드한다.
+name: build
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx electron-builder --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-${{ matrix.os }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
