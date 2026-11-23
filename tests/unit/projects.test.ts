@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { parseOpenIntent, resolveProject, scanProjects, scoreProject } from '../../src/main/projects'
 
 describe('parseOpenIntent', () => {
@@ -74,7 +74,8 @@ describe('scanProjects', () => {
     mk('b/c', 'pyproject.toml')
     mk('node_modules/x', 'package.json')
     mk('plain/dir', 'README')
-    const found = scanProjects([root], { depth: 3 }).map((p) => p.slice(root.length + 1)).sort()
+    // 운영체제별 경로 구분자(\ 또는 /) 와 무관하게 비교
+    const found = scanProjects([root], { depth: 3 }).map((p) => p.slice(root.length + 1).split(sep).join('/')).sort()
     expect(found).toEqual(['a', 'a/apps/web', 'b/c'])
   })
 })
