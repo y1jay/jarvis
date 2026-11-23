@@ -22,6 +22,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # 네이티브 음성 인식 엔진(whisper.cpp) — 맥 Metal / 윈도우 CPU
+      - run: node scripts/build-whisper.mjs
       - run: npx electron-builder --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'

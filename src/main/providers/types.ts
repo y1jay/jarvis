@@ -22,6 +22,8 @@ export interface TurnContext {
 export interface AgentProvider {
   readonly id: ProviderId
   send(prompt: string, ctx: TurnContext): Promise<void>
+  /** 첫 요청 지연을 줄이려 미리 띄워 두기 (선택) */
+  warm?(ctx: TurnContext): void
   interrupt(): Promise<void>
   /** 대화 초기화 (새 세션) */
   reset(): void

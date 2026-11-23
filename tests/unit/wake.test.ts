@@ -41,3 +41,46 @@ describe('이름 바꾸기', () => {
     expect(parseRenameIntent(t)).toBeNull()
   })
 })
+
+describe('흐린 발음 호출어 (자모 유사도)', () => {
+  const W = effectiveWakeWords('자비스')
+  const W2 = effectiveWakeWords('프라이데이')
+  it.each([
+    ['자빗스 불 꺼줘', '불 꺼줘'],
+    ['차비스, 오늘 일정', '오늘 일정'],
+    ['재비스 커밋해줘', '커밋해줘'],
+    ['헤이 자비쓰 테스트 돌려', '테스트 돌려'],
+    ['쟈빗스야 음악 틀어', '음악 틀어'],
+    ['자 빗스 날씨 어때', '날씨 어때'],
+    ['헤이 잡이스', ''],
+    ['jervis open the browser', 'open the browser']
+  ])('잡아냄: %s → "%s"', (t, cmd) => {
+    expect(matchWakeWord(t, W)).toEqual({ matched: true, command: cmd })
+  })
+  it.each([
+    '자비를 베풀어 주세요',
+    '자비심이 없네',
+    '자세히 설명해줘',
+    '서비스 너무 좋다',
+    '잠깐만 기다려',
+    '자 이제 시작하자',
+    '재밌는 영화 보자',
+    '차 빼줘',
+    '자바 스크립트 공부 중',
+    '오늘 회의 자료 보내줘',
+    '사비 털어서 샀어',
+    '그 자식 진짜'
+  ])('무시: %s', (t) => {
+    expect(matchWakeWord(t, W).matched).toBe(false)
+  })
+  it.each([
+    ['프라이대이 크롬 열어', '크롬 열어'],
+    ['헤이 브라이데이', ''],
+    ['플라이데이 일정 알려줘', '일정 알려줘']
+  ])('사용자 이름도 흐린 발음 허용: %s', (t, cmd) => {
+    expect(matchWakeWord(t, W2)).toEqual({ matched: true, command: cmd })
+  })
+  it.each(['프라이팬 어디 있어', '프라이드 치킨 먹자', '파라다이스 가자'])('사용자 이름과 비슷한 일상어 무시: %s', (t) => {
+    expect(matchWakeWord(t, W2).matched).toBe(false)
+  })
+})

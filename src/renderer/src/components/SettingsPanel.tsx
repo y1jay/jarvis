@@ -74,6 +74,11 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
           항상 듣기 (앱이 켜지면 바로 호출어 대기, 창을 닫아도 계속)
         </label>
         <label className="set-check">
+          <input type="checkbox" checked={settings.keepAwake} onChange={(e) => void up({ keepAwake: e.target.checked })} />
+          화면이 꺼져도 듣기 (맥/PC 가 잠들지 않게 유지, 부르면 화면을 깨움)
+        </label>
+        <div className="muted small">맥북 덮개를 닫으면 내장 마이크는 하드웨어적으로 꺼집니다. 덮개를 닫고 쓸 땐 블루투스 헤드셋·USB 마이크를 연결해 주세요 (연결하면 자동으로 그 마이크를 씁니다).</div>
+        <label className="set-check">
           <input type="checkbox" checked={settings.launchAtLogin} onChange={(e) => void up({ launchAtLogin: e.target.checked })} />
           로그인 시 자동 실행 (숨김 상태로 대기)
         </label>
@@ -88,6 +93,10 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
         <label className="set-check">
           <input type="checkbox" checked={settings.voice.ttsEnabled} onChange={(e) => void up({ voice: { ttsEnabled: e.target.checked } })} />
           음성으로 답변
+        </label>
+        <label className="set-check">
+          <input type="checkbox" checked={settings.voice.bargeIn} onChange={(e) => void up({ voice: { bargeIn: e.target.checked } })} />
+          말하는 중에도 제가 말하면 멈추고 듣기 (스피커 사용 시 끄면 자기 목소리에 끊기지 않음)
         </label>
         <label className="set-row">
           <span>마이크</span>

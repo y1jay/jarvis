@@ -40,8 +40,9 @@
     "test": "vitest run",
     "test:live": "vitest run --config vitest.live.config.ts",
     "e2e": "npm run build && node tests/e2e/run.mjs",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
-    "icons": "node scripts/run-electron.mjs scripts/make-icon.mjs"
+    "dist:mac": "npm run build && node scripts/build-whisper.mjs && electron-builder --mac",
+    "dist:win": "npm run build && node scripts/build-whisper.mjs && electron-builder --win",
+    "icons": "node scripts/run-electron.mjs scripts/make-icon.mjs",
+    "whisper": "node scripts/build-whisper.mjs"
   }
 }

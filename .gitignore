@@ -6,3 +6,5 @@ src/renderer/public/mediapipe/
 *.log
 tests/e2e/artifacts/
 src/renderer/public/ort/
+.cache/
+resources/bin/

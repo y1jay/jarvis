@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, session, shell, systemPreferences, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, shell, systemPreferences, Tray } from 'electron'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -23,6 +23,10 @@ import { Asker, resolveChoice, type QuestionKind } from './asker'
 import { DeviceHub, parseDeviceIntent, type Platform } from './devices'
 import { androidReleasePlaybook, parseReleaseIntent } from './release'
 import { DEFAULT_NAME, parseRenameIntent } from '../shared/wake'
+import { FastChat, needsAgent } from './fastchat'
+import { isClamshell, KeepAwake, wakeDisplay } from './power'
+import { buildVocabPrompt, MODELS, NativeStt, sttBinaryPath } from './stt'
+import { APP_ALIASES } from './system'
 import { classifyApprovalPrompt, parseClassification, ruleApproval, type ApprovalDecision } from '../shared/approval'
 import {
   PROVIDER_LABEL,
@@ -109,6 +113,13 @@ let convo: ConversationLog
 let memory: MemoryStore
 let lexicon: ApprovalLexicon
 let sites: SiteStore
+let fastChat: FastChat
+const keepAwake = new KeepAwake()
+function applyKeepAwake(): void {
+  const s = settings.get()
+  keepAwake.set(s.alwaysListen && s.keepAwake)
+}
+let stt: NativeStt
 const browser = new JarvisBrowser({
   window: () => win,
   requestShow: () => send('popup:open', 'browser'),
@@ -218,6 +229,22 @@ function cwd(): string {
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+}
+
+/** 음성 인식 힌트 어휘: 이름·최근 프로젝트·연결 사이트·자주 쓰는 앱/용어 */
+function vocabPrompt(): string {
+  const s = settings.get()
+  const projects = s.recentProjects.map((d) => d.split(/[\\/]/).pop() ?? '')
+  return buildVocabPrompt([
+    `헤이 ${s.assistantName}`,
+    s.assistantName,
+    '자비스',
+    ...projects,
+    ...sites.list().map((x) => x.name),
+    '깃허브', '커밋', '푸시', '풀 리퀘스트', 'API', 'README',
+    ...Object.keys(APP_ALIASES).slice(0, 25),
+    '에뮬레이터', '아이폰 시뮬레이터', '플레이 콘솔'
+  ])
 }
 
 function memoryText(): string {
@@ -699,6 +726,20 @@ async function handleRequest(job: JobInfo): Promise<void> {
   // 5) 모델 연결 확인 (끊겨 있으면 JARVIS 가 직접 로그인 창을 연다)
   if (!(await ensureConnected(job, p))) return void finishJob(job, `${PROVIDER_LABEL[p]} 에 연결되지 않아 요청을 처리하지 못했습니다. 다시 "${PROVIDER_LABEL[p]} 연결해줘"라고 말씀해 주세요.`, 'error')
 
+  // 6-0) 빠른 대화: 도구가 필요 없는 말은 가벼운 모델로 바로 답한다 (필요하면 스스로 에이전트로 넘김)
+  if (!generated && p === 'claude' && settings.get().fastLane && !needsAgent(text)) {
+    try {
+      job.status = 'running'
+      emitJob(job)
+      const ans = await fastChat.ask(text, (d) => send('jarvis:job-delta', { jobId: job.id, text: d }))
+      if (ans !== null) return void finishJob(job, ans)
+    } catch {
+      /* 빠른 경로 실패 → 전체 에이전트로 */
+    }
+  }
+  // 음성 요청이 오래 걸리는 작업으로 가면 바로 짧게 알려 준다
+  if (job.via === 'voice') send('jarvis:speak', '네, 진행할게요.')
+
   // 6) 세션별 작업 실행 → 한 답변
   const known = finder.list(settings.get().recentProjects)
   // JARVIS 가 만든 지시문(출시 플레이북 등)은 프로젝트 이름 분석 없이 현재 프로젝트에서 실행
@@ -731,6 +772,9 @@ function registerIpc(): void {
     const before = settings.get()
     const next = settings.update(patch)
     if (patch.launchAtLogin !== undefined) applyLoginItem()
+    if (patch.alwaysListen !== undefined || patch.keepAwake !== undefined) applyKeepAwake()
+    if (patch.voice?.nativeModel && patch.voice.nativeModel !== before.voice.nativeModel) void stt.restart()
+    if (patch.fastModel !== undefined || patch.assistantName !== undefined) fastChat.close()
     if (patch.assistantName !== undefined || patch.launchAtLogin !== undefined) buildTray()
     if (patch.alwaysOnTop !== undefined) win?.setAlwaysOnTop(next.alwaysOnTop)
     audit.record({ action: 'settings.changed', provider: 'jarvis', detail: { keys: Object.keys(patch), before: pick(before, Object.keys(patch)), after: pick(next, Object.keys(patch)) } })
@@ -797,7 +841,11 @@ function registerIpc(): void {
     }, 0)
     return { jobId: job.id }
   })
-  h('agent:interrupt', () => orch.interruptAll())
+  h('agent:interrupt', async (via: 'click' | 'voice' = 'click', transcript?: string) => {
+    const running = await orch.interruptAll()
+    const s = settings.get()
+    audit.record({ action: 'agent.interrupt', provider: s.provider, project: s.projectDir, detail: { via, running, ...(transcript ? { transcript: transcript.slice(0, 200) } : {}) } })
+  })
   h('agent:reset', () => orch.resetAll())
   h('jarvis:history', (limit?: number) => convo.recent('job', limit ?? 30))
 
@@ -871,6 +919,10 @@ function registerIpc(): void {
   // ── 되묻기 ──
   h('question:answer', (id: string, value: string | null) => asker.answer(id, value))
   h('question:list', () => asker.list())
+  // ── 네이티브 음성 인식 ──
+  h('stt:status', () => ({ available: stt.available, ...stt.state }))
+  h('stt:start', () => stt.start())
+  h('stt:transcribe', (buf: ArrayBuffer) => stt.transcribe(new Float32Array(buf), vocabPrompt()))
   h('voice:report', (list: Array<{ name: string; lang: string }>) => {
     voices = list
   })
@@ -962,7 +1014,12 @@ function registerIpc(): void {
   h('win:minimize', () => win?.minimize())
   h('win:toggleMaximize', () => (win?.isMaximized() ? win.unmaximize() : win?.maximize()))
   h('win:close', () => win?.close())
-  h('win:summon', () => showWindow())
+  // 호출되면 잠든 화면도 깨운다
+  h('win:summon', () => {
+    wakeDisplay()
+    showWindow()
+  })
+  h('power:status', async () => ({ clamshell: await isClamshell(), keepAwake: keepAwake.active }))
   h('app:info', () => ({ platform: process.platform, version: app.getVersion(), userData: app.getPath('userData'), cwd: cwd() }))
 }
 
@@ -1037,6 +1094,29 @@ app.whenReady().then(() => {
   // 이전에 열려 있던 프로젝트로 첫 세션 준비
   const s0 = settings.get()
   orch.sessionFor(s0.provider, s0.projectDir, true)
+  fastChat = new FastChat({
+    env: () => auth.envFor('claude'),
+    name: () => settings.get().assistantName,
+    memory: () => memoryText(),
+    model: () => settings.get().fastModel,
+    cwd: () => workspaceDir()
+  })
+  stt = new NativeStt({
+    binary: sttBinaryPath(app.getAppPath(), process.resourcesPath, app.isPackaged),
+    modelsDir: join(ud, 'models'),
+    modelKey: () => (MODELS[settings.get().voice.nativeModel] ? settings.get().voice.nativeModel : 'small'),
+    onState: (st) => send('stt:state', { available: stt.available, ...st })
+  })
+  // 항상 듣기면 음성 엔진(모델 다운로드 포함)을 미리 준비
+  if (s0.alwaysListen) void stt.start()
+  // 첫 대답이 느리지 않도록 AI 프로세스를 미리 띄워 둔다 (로그인되어 있을 때만)
+  setTimeout(() => {
+    void authStatus('claude').then((st) => {
+      if (!st.loggedIn) return
+      fastChat.warm()
+      orch.prewarm()
+    })
+  }, 1500)
 
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'media' || permission === 'clipboard-sanitized-write'))
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media')
@@ -1045,6 +1125,10 @@ app.whenReady().then(() => {
   createWindow()
   buildTray()
   applyLoginItem()
+  applyKeepAwake()
+  // 잠자기에서 깨어나거나 잠금 해제되면 마이크를 다시 연결 (장치가 바뀌었을 수 있음)
+  powerMonitor.on('resume', () => send('voice:restart', { reason: 'resume' }))
+  powerMonitor.on('unlock-screen', () => send('voice:restart', { reason: 'unlock' }))
   // 프로젝트 후보 스캔을 미리 해 둔다 (첫 "열어줘" 응답 지연 방지)
   setTimeout(() => finder.list(), 4000)
 
@@ -1062,6 +1146,9 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   asker.cancelAll()
+  stt?.stop()
+  keepAwake.set(false)
+  fastChat?.close()
   void devices.stopStream()
 })
 // 창이 없어도(숨김) 트레이에서 계속 실행 — 종료는 트레이 메뉴의 "종료"

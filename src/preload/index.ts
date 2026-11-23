@@ -52,7 +52,7 @@ const api = {
   },
   agent: {
     send: (prompt: string, via: 'voice' | 'text' = 'text') => invoke<{ jobId: string }>('agent:send', prompt, via),
-    interrupt: () => invoke<void>('agent:interrupt'),
+    interrupt: (via: 'click' | 'voice' = 'click', transcript?: string) => invoke<void>('agent:interrupt', via, transcript),
     reset: () => invoke<void>('agent:reset'),
     onEvent: (cb: (e: AgentEventEnvelope) => void) => on('agent:event', cb),
     onTurnStart: (cb: (e: { turnId: string; sessionId: string; provider: ProviderId; prompt: string; jobId?: string }) => void) => on('agent:turn-start', cb),
@@ -61,6 +61,7 @@ const api = {
   jarvis: {
     onJob: (cb: (j: JobInfo) => void) => on('jarvis:job', cb),
     onJobDone: (cb: (j: JobInfo) => void) => on('jarvis:job-done', cb),
+    onJobDelta: (cb: (d: { jobId: string; text: string }) => void) => on('jarvis:job-delta', cb),
     onSpeak: (cb: (text: string) => void) => on('jarvis:speak', cb),
     history: (limit?: number) => invoke<Array<{ type: 'job'; ts: string; jobId: string; prompt: string; answer: string; status: string; via: string; tasks: Array<{ title: string; sessionId: string; status: string; instruction: string }> }>>('jarvis:history', limit)
   },
@@ -116,6 +117,16 @@ const api = {
     onStatus: (cb: (s: { platform: 'ios' | 'android' | null; state: 'booting' | 'running' | 'stopped' | 'error'; name?: string; log?: string }) => void) => on('device:status', cb)
   },
   popup: { onOpen: (cb: (kind: 'browser' | 'device') => void) => on('popup:open', cb) },
+  power: {
+    status: () => invoke<{ clamshell: boolean; keepAwake: boolean }>('power:status'),
+    onVoiceRestart: (cb: (p: { reason: string }) => void) => on('voice:restart', cb)
+  },
+  stt: {
+    status: () => invoke<{ available: boolean; state: string; progress?: number; message?: string; model?: string }>('stt:status'),
+    start: () => invoke<boolean>('stt:start'),
+    transcribe: (buf: ArrayBuffer) => invoke<string>('stt:transcribe', buf),
+    onState: (cb: (s: { available: boolean; state: string; progress?: number; message?: string; model?: string }) => void) => on('stt:state', cb)
+  },
   voice: {
     report: (list: Array<{ name: string; lang: string }>) => invoke<void>('voice:report', list),
     classifyApproval: (utterance: string, title: string, detail: string) => invoke<{ decision: 'approve' | 'deny' | null; source: string }>('voice:classifyApproval', utterance, title, detail),

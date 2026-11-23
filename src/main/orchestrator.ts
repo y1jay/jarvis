@@ -182,12 +182,22 @@ export class Orchestrator {
     this.publish()
   }
 
+  /** 포커스된 세션의 AI 를 미리 띄워 둔다 */
+  prewarm(): void {
+    const rec = this.focused ? this.sessions.get(this.focused) : undefined
+    if (!rec?.provider.warm) return
+    rec.provider.warm(this.d.buildContext({ ...rec.info }, 'warm', () => undefined))
+  }
+
   resetAll(): void {
     for (const id of [...this.sessions.keys()]) this.close(id)
   }
 
-  async interruptAll(): Promise<void> {
+  /** 실행 중이던 세션 수를 돌려준다 */
+  async interruptAll(): Promise<number> {
+    const running = [...this.sessions.values()].filter((s) => s.info.status === 'running').length
     await Promise.all([...this.sessions.values()].filter((s) => s.info.status === 'running').map((s) => s.provider.interrupt().catch(() => undefined)))
+    return running
   }
 
   /** (AI, 프로젝트) 세션 재사용 — 포커스된 것 우선, 없으면 새로 */

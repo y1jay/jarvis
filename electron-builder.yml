@@ -15,6 +15,9 @@ extraResources:
     to: trayTemplate@2x.png
   - from: build/tray.png
     to: tray.png
+  # 네이티브 음성 인식 엔진 (scripts/build-whisper.mjs 로 플랫폼별 빌드)
+  - from: resources/bin
+    to: bin
 # 공식 CLI / Agent SDK 는 네이티브 바이너리를 실행하므로 asar 밖으로 풀어 둔다
 asarUnpack:
   - node_modules/@anthropic-ai/**

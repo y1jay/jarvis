@@ -20,13 +20,19 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
     ttsPitch: 0.95,
     sttModel: 'onnx-community/whisper-small',
     language: 'korean',
-    inputDeviceId: null
+    inputDeviceId: null,
+    // 맥(GPU)은 정확한 large-v3-turbo, 윈도우(CPU)는 가벼운 small
+    nativeModel: process.platform === 'darwin' ? 'large-v3-turbo' : 'small',
+    bargeIn: true
   },
   camera: { enabled: false, deviceId: null },
   alwaysOnTop: false,
   assistantName: '자비스',
   alwaysListen: true,
+  keepAwake: true,
   launchAtLogin: true,
+  fastLane: true,
+  fastModel: 'sonnet',
   learning: { enabled: true }
 }
 

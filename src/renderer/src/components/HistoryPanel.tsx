@@ -16,6 +16,7 @@ const ACTION_LABEL: Record<string, string> = {
   'approval.approved': '승인',
   'approval.denied': '거부',
   'agent.prompt': '명령',
+  'agent.interrupt': '작업 중지',
   'settings.changed': '설정 변경',
   'system.app.open': '앱 실행',
   'system.app.quit': '앱 종료',
@@ -38,6 +39,7 @@ const FILTERS: Array<[string, string]> = [
 function summary(e: AuditEntry): string {
   const d = e.detail ?? {}
   if (e.action === 'agent.prompt') return String(d.prompt ?? '')
+  if (e.action === 'agent.interrupt') return `${d.via === 'voice' ? `🎙 "${String(d.transcript ?? '')}"` : '중지 버튼'} · 실행 중 ${String(d.running ?? 0)}개`
   if (e.action === 'git.commit') return `${String(d.message ?? '').split('\n')[0]} ${e.target ? `(${e.target.slice(0, 7)})` : ''}${d.unapproved ? ' ⚠ 미승인' : ''}`
   if (e.action.startsWith('approval') && d.via === 'voice') return `${String(d.title ?? '')} · 🎙 "${String(d.transcript ?? '')}"`
   if (e.action.startsWith('approval')) return String(d.title ?? e.target ?? '')

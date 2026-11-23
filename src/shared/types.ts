@@ -118,6 +118,10 @@ export interface JarvisSettings {
     language: string
     /** 마이크 장치 (null = 시스템 기본) */
     inputDeviceId: string | null
+    /** 네이티브 음성 인식 모델 ('large-v3-turbo' | 'small') */
+    nativeModel: string
+    /** JARVIS 가 말하는 중에도 사용자가 말하면 멈추고 듣기 */
+    bargeIn: boolean
   }
   camera: {
     enabled: boolean
@@ -128,8 +132,14 @@ export interface JarvisSettings {
   assistantName: string
   /** 앱이 켜지면 바로 마이크 대기 (창을 닫아도 뒤에서 듣는다) */
   alwaysListen: boolean
+  /** 항상 듣기 중 시스템이 잠들지 않게 (화면은 꺼져도 됨) — 부르면 화면을 깨운다 */
+  keepAwake: boolean
   /** 로그인 시 자동 실행 (숨김 상태로 대기) */
   launchAtLogin: boolean
+  /** 간단한 대화는 빠른 모델로 바로 답하기 (도구가 필요하면 자동으로 전체 에이전트로) */
+  fastLane: boolean
+  /** 빠른 대화에 쓸 모델 */
+  fastModel: string
   /** 대화에서 사용자 정보를 학습해 기억할지 */
   learning: { enabled: boolean }
 }
@@ -171,6 +181,7 @@ export type AuditAction =
   | 'approval.approved'
   | 'approval.denied'
   | 'agent.prompt'
+  | 'agent.interrupt'
   | 'settings.changed'
   | 'system.app.open'
   | 'system.app.quit'

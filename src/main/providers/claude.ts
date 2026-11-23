@@ -178,7 +178,18 @@ export class ClaudeProvider implements AgentProvider {
     done?.()
   }
 
+  /** 미리 프로세스를 띄워 둔다 (메시지는 보내지 않음) */
+  warm(ctx: TurnContext): void {
+    try {
+      this.ensure(ctx)
+    } catch {
+      /* 첫 요청 때 다시 시도 */
+    }
+  }
+
   private handle(m: SDKMessage): void {
+    // 세션 id 는 미리 띄워 둔 상태(턴 없음)에서도 기억해 둔다
+    if (m.type === 'system' && m.subtype === 'init') this.session = m.session_id
     const ctx = this.ctx
     if (!ctx) return
     switch (m.type) {

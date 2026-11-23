@@ -7,7 +7,8 @@ Claude · GPT(Codex) · Gemini 를 각 사 공식 로그인으로 연결해 쓰�
 
 | 분류 | 예시 |
 | --- | --- |
-| 음성 | "자비스, 오늘 할 일 정리해줘" — 로컬 Whisper 인식, TTS 응답, 주먹 제스처/⌘⇧J 로 호출 |
+| 음성 | "헤이 자비스, 오늘 할 일 정리해줘" — 네이티브 whisper.cpp 인식(맥 GPU, 문장당 약 0.3초), 발음이 흐려도 호출어 인식, 말하는 중 끼어들면 즉시 멈추고 듣기, "그만"으로 정지 |
+| 빠른 대화 | 도구가 필요 없는 질문은 가벼운 모델로 약 1초 안에 답하고 문장 단위로 바로 읽음. 파일·앱·웹 작업은 자동으로 전체 에이전트로 |
 | 여러 프로젝트 | "xcroll-be 랑 xcroll-app 열어줘", "be 에 API 추가하고 app 에서 호출하게 해줘" → 세션별 병렬/순차 실행 후 한 답변 |
 | 코딩 (Claude) | Claude Code 와 같은 엔진: 파일 읽기/수정, Bash, CLAUDE.md, 세션 유지 |
 | Git | 상태/디프/스테이징/커밋/푸시 패널, AI 커밋 메시지. **commit / push / 파괴적 명령은 항상 승인 창** |
@@ -41,7 +42,8 @@ npm install
 npm run dev        # 개발 실행 (VS Code 터미널에서도 동작하도록 ELECTRON_RUN_AS_NODE 자동 제거)
 ```
 
-처음 마이크를 켜면 Whisper 음성 모델(약 250MB)을 한 번 내려받는다.
+처음 마이크를 켜면 음성 인식 모델을 한 번 내려받는다 (맥: Large v3 Turbo 약 570MB, 윈도우: Small 약 190MB).
+음성 엔진(whisper.cpp) 빌드: `npm run whisper` (cmake 필요, `dist:mac`/`dist:win` 에 포함).
 
 ## 테스트
 

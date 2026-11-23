@@ -6,7 +6,7 @@ import { HologramScene } from './hologram/HologramScene'
 import { HandTracker } from './vision/handTracker'
 import type { HandState } from './vision/gestures'
 import { VoiceEngine, type VoicePhase } from './voice/VoiceEngine'
-import { matchWakeWord } from './voice/text'
+import { isStopCommand, matchWakeWord, takeSentences } from './voice/text'
 import { effectiveWakeWords } from '../../shared/wake'
 import { ChatPanel } from './components/ChatPanel'
 import { JarvisThread } from './components/JarvisThread'
@@ -124,6 +124,25 @@ export function App(): ReactNode {
   // 트레이 메뉴의 듣기 켜기/끄기
   useEffect(() => window.jarvis.app.onToggleListen(() => void toggleVoice()), [])
 
+  // 맥북 덮개 닫힘 감지 (닫히면 내장 마이크가 꺼짐 → 외장 마이크 우선) + 잠자기/잠금 해제 후 마이크 재연결
+  useEffect(() => {
+    let last: boolean | null = null
+    const check = async (): Promise<void> => {
+      const { clamshell } = await window.jarvis.power.status()
+      if (clamshell === last) return
+      last = clamshell
+      voice.current?.updateOptions({ clamshell })
+      if (voice.current?.listening) voice.current.scheduleRestart('devicechange', 300)
+    }
+    void check()
+    const t = setInterval(() => void check(), 20_000)
+    const off = window.jarvis.power.onVoiceRestart(({ reason }) => voice.current?.scheduleRestart(reason, 500))
+    return () => {
+      clearInterval(t)
+      off()
+    }
+  }, [])
+
   // 홀로그램은 스테이지 DOM 이 생긴 뒤(설정 로드 후) 생성
   const ready = !!settings
   useEffect(() => {
@@ -144,12 +163,26 @@ export function App(): ReactNode {
     if (!busy && st === 'thinking') h.setState('idle')
   }, [busy])
 
-  const speak = useCallback((text: string) => {
+  const speak = useCallback((text: string, followUp = false) => {
     const v = voice.current
     if (!v || !settingsRef.current?.voice.ttsEnabled) return
     holo.current?.setState('speaking')
-    void v.speak(text).then(() => holo.current?.getState() === 'speaking' && holo.current?.setState('idle'))
+    void v.speak(text).then(() => {
+      if (holo.current?.getState() === 'speaking') holo.current?.setState('idle')
+      // 대답한 뒤 몇 초간은 호출어 없이 이어서 말할 수 있게
+      if (followUp) v.keepAwake(8000)
+    })
   }, [])
+
+  // ── 스트리밍 답변을 문장 단위로 바로 읽기 ──
+  const jobsRef = useRef<JobInfo[]>([])
+  jobsRef.current = jobs
+  const streamBuf = useRef(new Map<string, string>())
+  const streamed = useRef(new Set<string>())
+  const wantsVoice = (jobId: string): boolean => {
+    const j = jobsRef.current.find((x) => x.id === jobId)
+    return !!settingsRef.current?.voice.ttsEnabled && !!voice.current && (j?.via === 'voice' || phaseRef.current !== 'off')
+  }
 
   // ── main 이벤트 ──
   useEffect(() => {
@@ -172,7 +205,30 @@ export function App(): ReactNode {
           holo.current?.setState('error')
           setTimeout(() => holo.current?.getState() === 'error' && holo.current?.setState('idle'), 2500)
         }
-        if (j.answer && (j.via === 'voice' || phaseRef.current !== 'off')) speak(j.answer)
+        const v = voice.current
+        if (streamed.current.has(j.id) && v) {
+          // 이미 문장 단위로 읽는 중 → 남은 꼬리만 읽고, 끝나면 이어 말하기 대기
+          const rest = (streamBuf.current.get(j.id) ?? '').trim()
+          streamBuf.current.delete(j.id)
+          streamed.current.delete(j.id)
+          if (rest) v.enqueue(rest)
+          void v.whenIdle().then(() => {
+            if (holo.current?.getState() === 'speaking') holo.current?.setState('idle')
+            if (j.via === 'voice') v.keepAwake(8000)
+          })
+        } else if (j.answer && (j.via === 'voice' || phaseRef.current !== 'off')) speak(j.answer, j.via === 'voice')
+      }),
+      window.jarvis.jarvis.onJobDelta(({ jobId, text }) => {
+        // 화면에도 실시간으로
+        setJobs((js) => js.map((x) => (x.id === jobId && x.status !== 'done' ? { ...x, answer: (x.answer ?? '') + text } : x)))
+        if (!wantsVoice(jobId)) return
+        const buf = (streamBuf.current.get(jobId) ?? '') + text
+        const { sentences, rest } = takeSentences(buf)
+        streamBuf.current.set(jobId, rest)
+        if (!sentences.length) return
+        streamed.current.add(jobId)
+        holo.current?.setState('speaking')
+        for (const sentence of sentences) voice.current?.enqueue(sentence)
       }),
       window.jarvis.jarvis.onSpeak((t) => phaseRef.current !== 'off' && speak(t)),
       window.jarvis.session.onList(({ sessions, focused }) => {
@@ -227,7 +283,7 @@ export function App(): ReactNode {
       return
     }
     voice.current ??= new VoiceEngine(
-      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId },
+      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId, bargeIn: s.voice.bargeIn },
       {
         onPhase: (p) => {
           setPhase(p)
@@ -242,15 +298,29 @@ export function App(): ReactNode {
         onTranscript: (t) => setTranscript(t),
         onCommand: (t) => {
           void window.jarvis.win.summon()
+          // "멈춰/그만" — 하던 작업을 모두 멈추고 다음 말을 기다린다
+          if (isStopCommand(t)) {
+            voice.current?.stopSpeaking()
+            void window.jarvis.agent
+              .interrupt('voice', t)
+              .then(() => voice.current?.speak('멈췄습니다. 말씀하세요.'))
+              .then(() => voice.current?.keepAwake())
+            return
+          }
           void sendRef.current(t, 'voice')
         },
+        onBargeIn: () => setTranscript(''),
         onWake: () => {
           void window.jarvis.win.summon()
           setTranscript('')
           void voice.current?.speak('네, 말씀하세요.')
         },
         onProgress: (m) => setVoiceProgress(m),
-        onError: (m) => notify(m, true)
+        onError: (m) => {
+          notify(m, true)
+          // 마이크가 끊긴 경우엔 화면을 안 보고 있을 수 있으니 소리로도 알린다
+          if (/덮개|소리가 전혀/.test(m)) speak(m.split('.')[0] + '.')
+        }
       }
     )
     await voice.current.start()
@@ -266,7 +336,7 @@ export function App(): ReactNode {
       void voice.current.start()
     }
     lastMic.current = mic
-    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch })
+    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch, bargeIn: settings.voice.bargeIn })
   }, [settings])
 
   // ── 카메라 + 손 추적 ──
