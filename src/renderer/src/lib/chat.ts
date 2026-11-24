@@ -74,6 +74,11 @@ export function applyEvent(turn: Turn, e: AgentEvent): Turn {
       if (!hasText && e.text && !e.isError) next = [...next, { type: 'text', text: e.text, open: false }]
       return { ...turn, blocks: next, done: true, costUsd: e.costUsd, durationMs: e.durationMs }
     }
+    case 'background':
+      return turn
+    case 'followup':
+      // 뒤에서 하던 작업의 완료 보고 — 같은 턴 아래에 이어 붙인다
+      return { ...turn, blocks: [...closeText(blocks), { type: 'text', text: e.text, open: false }] }
   }
 }
 

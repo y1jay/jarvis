@@ -46,3 +46,23 @@ export function parseRenameIntent(text: string): string | null {
   }
   return null
 }
+
+/** 화면에 쓰는 이름: 자비스 → J.A.R.V.I.S., 프라이데이 → F.R.I.D.A.Y., 영문 이름은 점 찍어 대문자, 그 외는 그대로 */
+const BRAND: Record<string, [string, string]> = {
+  자비스: ['J.A.R.V.I.S.', 'JARVIS'],
+  프라이데이: ['F.R.I.D.A.Y.', 'FRIDAY'],
+  에디스: ['E.D.I.T.H.', 'EDITH'],
+  카렌: ['K.A.R.E.N.', 'KAREN'],
+  울트론: ['U.L.T.R.O.N.', 'ULTRON']
+}
+export function brandName(name: string): string {
+  const n = name.trim() || '자비스'
+  if (BRAND[n]) return BRAND[n][0]
+  if (/^[a-z]{2,12}$/i.test(n)) return `${n.toUpperCase().split('').join('.')}.`
+  return n
+}
+/** 대화 말풍선에 쓰는 짧은 이름: JARVIS / FRIDAY / 그대로 */
+export function shortName(name: string): string {
+  const n = name.trim() || '자비스'
+  return BRAND[n]?.[1] ?? (/^[a-z]+$/i.test(n) ? n.toUpperCase() : n)
+}

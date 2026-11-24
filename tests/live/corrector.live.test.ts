@@ -18,7 +18,8 @@ const CASES: Case[] = [
   { raw: '다운로드 폴더 열어줘', ctx: {}, expect: /^다운로드 폴더 열어줘$/, same: true },
   { raw: '오늘 일정 정리해서 슬랙으로 보내줘', ctx: {}, expect: /^오늘 일정 정리해서 슬랙으로 보내줘$/, same: true },
   { raw: '방금 만든 커밋은 푸시하지 말고 기다려', ctx: {}, expect: /^방금 만든 커밋은 푸시하지 말고 기다려$/, same: true },
-  { raw: '엑스크롤 비이 테스트 돌려줘', ctx: {}, expect: /(xcroll-be|엑스크롤 비이) 테스트 돌려줘/ }
+  { raw: '엑스크롤 비이 테스트 돌려줘', ctx: {}, expect: /(xcroll-be|엑스크롤 비이) 테스트 돌려줘/ },
+  { raw: '슬랙, 가자.', ctx: { recent: '사용자: 슬랙 열어.\n자비스: JARVIS 화면에서 슬랙 을(를) 열었습니다.', lastCommand: '슬랙 열어.' }, expect: /슬랙.*(닫|꺼)/ }
 ]
 
 describe('문맥 보정 (실제 Claude)', () => {

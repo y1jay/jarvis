@@ -5,7 +5,7 @@ import type { AuditInput } from './audit'
 import { SENSITIVE_CLICK, type JarvisBrowser } from './browser'
 import { activateApp, click as mouseClick, discardPrepared, keyCombo, prepareMessage, resolveMessenger, sendPrepared, typeText } from './computer'
 import type { DeviceHub, Platform } from './devices'
-import { listApps, openApp, openFile, openUrl, quitApp, resolveApp, resolveFolder, revealPath, screenshot } from './system'
+import { listApps, openFile, openUrl, quitApp, resolveApp, resolveFolder, revealPath, screenshot, type AppEntry } from './system'
 import { normalizeCode, type QuestionKind } from './asker'
 
 export interface JarvisToolHost {
@@ -23,6 +23,8 @@ export interface JarvisToolHost {
   siteLogin: (site: string) => Promise<string>
   startDevice: (platform?: Platform, name?: string) => Promise<string>
   stopDevice: () => Promise<string>
+  /** 앱을 JARVIS 화면 안에서 열기 */
+  openAppInJarvis: (query: string, app: AppEntry | null, via: string) => Promise<{ ok: boolean; message: string }>
 }
 
 const text = (t: string, isError = false) => ({ content: [{ type: 'text' as const, text: t }], isError })
@@ -63,11 +65,8 @@ export function createJarvisTools(host: JarvisToolHost) {
         const q = query?.toLowerCase()
         return text(listApps().map((a) => a.name).filter((n) => !q || n.toLowerCase().includes(q)).slice(0, 300).join('\n') || '(없음)')
       }),
-      tool('open_app', '앱 실행. 한국어 이름(크롬, 카톡, 슬랙 등)도 가능', { name: z.string() }, async ({ name }) => {
-        const app = resolveApp(name, listApps())
-        if (!app) return text(`앱을 찾지 못했습니다: ${name}. list_apps 로 확인하세요.`, true)
-        const r = await openApp(app)
-        host.audit({ action: 'system.app.open', provider: 'claude', target: app.name, detail: { query: name, ok: r.ok, via: 'claude-tool' } })
+      tool('open_app', '앱 열기 — JARVIS 화면 안에서 (웹 버전이 있는 앱은 JARVIS 브라우저, 카톡 같은 앱은 창을 JARVIS 팝업에 비춤). 한국어 이름(크롬, 카톡, 슬랙 등)도 가능', { name: z.string() }, async ({ name }) => {
+        const r = await host.openAppInJarvis(name, resolveApp(name, listApps()), 'claude-tool')
         return text(r.message, !r.ok)
       }),
       tool('quit_app', '앱 정상 종료 요청 (강제 종료 아님)', { name: z.string() }, async ({ name }) => {

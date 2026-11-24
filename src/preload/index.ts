@@ -116,7 +116,15 @@ const api = {
     onFrame: (cb: (f: { data: string; size: { width: number; height: number } | null; platform: 'ios' | 'android' | null }) => void) => on('device:frame', cb),
     onStatus: (cb: (s: { platform: 'ios' | 'android' | null; state: 'booting' | 'running' | 'stopped' | 'error'; name?: string; log?: string }) => void) => on('device:status', cb)
   },
-  popup: { onOpen: (cb: (kind: 'browser' | 'device') => void) => on('popup:open', cb) },
+  popup: { onOpen: (cb: (kind: 'browser' | 'device') => void) => on('popup:open', cb), onClose: (cb: (kind: 'browser' | 'device' | 'app' | 'all') => void) => on('popup:close', cb) },
+  /** 앱 비춰 보기 (카카오톡 등) */
+  mirror: {
+    onOpen: (cb: (p: { app: string }) => void) => on('mirror:open', cb),
+    onClose: (cb: (app: string) => void) => on('mirror:close', cb),
+    windows: (app: string) => invoke<Array<{ id: string; title: string }>>('mirror:windows', app),
+    click: (app: string, title: string, rx: number, ry: number, o?: { double?: boolean; right?: boolean }) => invoke<{ ok: boolean; message: string }>('mirror:click', app, title, rx, ry, o ?? {}),
+    type: (app: string, text: string, enter: boolean) => invoke<{ ok: boolean; message: string }>('mirror:type', app, text, enter)
+  },
   power: {
     status: () => invoke<{ clamshell: boolean; keepAwake: boolean }>('power:status'),
     onVoiceRestart: (cb: (p: { reason: string }) => void) => on('voice:restart', cb)

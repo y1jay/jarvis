@@ -84,3 +84,15 @@ describe('흐린 발음 호출어 (자모 유사도)', () => {
     expect(matchWakeWord(t, W2).matched).toBe(false)
   })
 })
+
+describe('화면에 쓰는 이름', () => {
+  it('이름을 바꾸면 화면 이름도', async () => {
+    const { brandName, shortName } = await import('../../src/shared/wake')
+    expect(brandName('자비스')).toBe('J.A.R.V.I.S.')
+    expect(brandName('프라이데이')).toBe('F.R.I.D.A.Y.')
+    expect(shortName('프라이데이')).toBe('FRIDAY')
+    expect(brandName('friday')).toBe('F.R.I.D.A.Y.')
+    expect(brandName('금요일')).toBe('금요일')
+    expect(shortName('금요일')).toBe('금요일')
+  })
+})

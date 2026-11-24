@@ -28,6 +28,11 @@ export class DialogContext {
       .join('\n')
   }
 
+  /** 사용자가 바로 앞에 한 말 */
+  lastUser(): string | null {
+    return this.entries[this.entries.length - 1]?.user ?? null
+  }
+
   last(): DialogEntry | null {
     return [...this.entries].reverse().find((d) => d.jarvis.trim()) ?? null
   }

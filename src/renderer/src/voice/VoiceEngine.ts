@@ -709,11 +709,26 @@ export class VoiceEngine {
     return this.say(text, true)
   }
 
-  private async say(text: string, cancelCurrent: boolean): Promise<void> {
+  /** 말하기는 한 줄로 — 겹쳐서 두 목소리가 동시에 나오지 않게 (앞 문장이 끝나야 다음 문장) */
+  private speechChain: Promise<void> = Promise.resolve()
+
+  private say(text: string, cancelCurrent: boolean): Promise<void> {
+    // "하던 말 끊고 이거 말해" 는 지금 말을 즉시 멈추고 바로 다음 차례로
+    if (cancelCurrent) this.cancelSpeech()
+    // 이 말을 부탁한 시점의 차례 번호 — 차례를 기다리는 사이 "멈춰"가 오면 버린다
+    const token = this.speechToken
+    const run = (): Promise<void> => this.sayNow(text, cancelCurrent, token)
+    const p = this.speechChain.then(run, run)
+    this.speechChain = p.catch(() => undefined)
+    return p
+  }
+
+  private async sayNow(text: string, cancelCurrent: boolean, token: number): Promise<void> {
+    if (token !== this.speechToken) return
     // 사용자가 말하는 중이면 끝날 때까지 기다렸다가 말한다 (사용자 말이 먼저)
     await this.waitForUser()
-    if (cancelCurrent) this.cancelSpeech()
-    const token = this.speechToken
+    if (token !== this.speechToken) return
+    if (cancelCurrent) speechSynthesis.cancel()
     // 사람 같은 목소리: main 에서 만든 소리를 받아 재생 (만드는 사이에 끊겼으면 버린다)
     const buf = await this.synth(text)
     this.synthCache.delete(text)

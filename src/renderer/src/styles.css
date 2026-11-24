@@ -309,3 +309,21 @@ button { font: inherit; color: inherit; }
 .body.side-closed { grid-template-columns: 0 1fr 440px; }
 .body.side-closed.panel-closed { grid-template-columns: 0 1fr; }
 @media (max-width: 1250px) { .body.side-closed { grid-template-columns: 0 1fr 380px; } .body.side-closed.panel-closed { grid-template-columns: 0 1fr; } }
+
+/* 앱 비춰 보기 */
+.mirror-view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+.mirror-view video { max-width: 100%; max-height: 100%; cursor: pointer; }
+.mirror-input { flex: 1; min-width: 0; }
+
+/* 코드 흐름 — 창 없이 글자만 홀로그램 위로 주르륵 */
+.code-rain { position: absolute; left: 0; right: 0; top: 70px; bottom: 120px; z-index: 5; overflow: hidden; pointer-events: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 35%, #000 100%); mask-image: linear-gradient(to bottom, transparent 0%, #000 35%, #000 100%); }
+.code-rain-lines { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); width: min(92%, 980px); font: 13px/1.55 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre; overflow: hidden; }
+.code-rain-lines > div { animation: cf-rise 0.35s ease-out both; overflow: hidden; text-overflow: ellipsis; }
+@keyframes cf-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.cf-file { color: #5fd6ff; margin-top: 10px; text-shadow: 0 0 8px rgba(95, 214, 255, 0.8); }
+.cf-del { color: #ff7a8a; text-shadow: 0 0 6px rgba(255, 122, 138, 0.45); }
+.cf-add { color: #7dffb0; text-shadow: 0 0 6px rgba(125, 255, 176, 0.5); }
+.cf-more, .cf-ctx { color: #8aa4b8; }
+
+.orb-code { font: 600 13px ui-monospace, Menlo, monospace; letter-spacing: -0.5px; }

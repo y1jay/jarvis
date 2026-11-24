@@ -165,3 +165,30 @@ describe('기본 기기 고르기', () => {
     expect(h.pickDefault([])).toBeNull()
   })
 })
+
+describe('앱은 JARVIS 화면 안에서', () => {
+  it('웹 버전이 있는 앱은 JARVIS 브라우저로', async () => {
+    const { webAppUrl } = await import('../../src/main/mirror')
+    expect(webAppUrl('슬랙')).toBe('https://app.slack.com/client')
+    expect(webAppUrl('크롬')).toBe('https://www.google.com')
+    expect(webAppUrl('Google Chrome')).toBe('https://www.google.com')
+    expect(webAppUrl('노션 앱')).toBe('https://www.notion.so')
+    expect(webAppUrl('카카오톡')).toBeNull() // 웹 버전 없음 → 창 비춰 보기
+    expect(webAppUrl('계산기')).toBeNull()
+  })
+})
+
+describe('코드 흐름 (바뀐 코드만)', () => {
+  it('고친 줄만 빨강/초록으로', async () => {
+    const { toFeedLines } = await import('../../src/renderer/src/components/CodeFeed')
+    const l = toFeedLines('Edit', { file_path: '/a/b/src/app.ts', old_string: 'const a = 1\nconst b = 2\nconst c = 3', new_string: 'const a = 1\nconst b = 20\nconst c = 3' })
+    expect(l).toEqual([
+      { kind: 'file', text: 'b/src/app.ts' },
+      { kind: 'del', text: 'const b = 2' },
+      { kind: 'add', text: 'const b = 20' }
+    ])
+    expect(toFeedLines('Write', { file_path: 'x.ts', content: 'a\nb' }).filter((x) => x.kind === 'add')).toHaveLength(2)
+    expect(toFeedLines('Bash', { command: 'ls' })).toEqual([])
+    expect(toFeedLines('Write', { file_path: 'big.ts', content: Array(300).fill('x').join('\n') }).pop()?.kind).toBe('more')
+  })
+})

@@ -30,6 +30,10 @@ export type AgentEvent =
   | { kind: 'status'; message: string }
   | { kind: 'result'; text: string; isError: boolean; costUsd?: number; durationMs?: number }
   | { kind: 'error'; message: string }
+  /** 뒤에서 도는 작업(서브 에이전트 등) 수 — 0 이 될 때까지 '작업 중' */
+  | { kind: 'background'; count: number; tasks: string[] }
+  /** 차례가 끝난 뒤 뒤에서 하던 작업을 마치고 AI 가 따로 낸 결과 (완료 보고) */
+  | { kind: 'followup'; text: string }
 
 export interface AgentEventEnvelope {
   turnId: string
@@ -45,6 +49,8 @@ export interface SessionInfo {
   provider: ProviderId
   projectDir: string | null
   status: 'idle' | 'running' | 'error'
+  /** 뒤에서 도는 작업 수 (있으면 status 는 running) */
+  background?: number
   createdAt: number
   lastActive: number
   turns: number
@@ -198,6 +204,8 @@ export type AuditAction =
   | 'agent.interrupt'
   | 'settings.changed'
   | 'system.app.open'
+  | 'mirror.type'
+  | 'mirror.click'
   | 'system.permission.missing'
   | 'voice.vault.setup'
   | 'voice.vault.backup'
@@ -207,6 +215,8 @@ export type AuditAction =
   | 'voice.correct'
   | 'tts.install'
   | 'voice.train'
+  | 'privacy.redact'
+  | 'agent.followup'
   | 'system.app.quit'
   | 'system.url.open'
   | 'system.path.open'

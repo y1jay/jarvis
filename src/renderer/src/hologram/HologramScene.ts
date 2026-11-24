@@ -71,6 +71,12 @@ export class HologramScene {
   private userRot = new THREE.Euler(0.25, 0, 0)
   private anchor: { x: number; y: number } | null = null
   private ro: ResizeObserver
+  /** 작업 중 (말하기/듣기와 별개로 작업이 도는 동안 계속) */
+  private working = false
+  private workAmt = 0
+  /** 코어 와이어프레임의 원래 꼭짓점 (작업 중 표면을 물결치게 할 때 기준) */
+  private coreBase: Float32Array
+  private coreDeformed = false
 
   constructor(private readonly host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true })
@@ -143,6 +149,8 @@ export class HologramScene {
     this.glow.scale.set(3.2, 3.2, 1)
     this.root.add(this.glow)
 
+    this.coreBase = (this.core.geometry.getAttribute('position').array as Float32Array).slice()
+
     this.ro = new ResizeObserver(() => this.resize())
     this.ro.observe(host)
     this.resize()
@@ -151,6 +159,10 @@ export class HologramScene {
 
   setState(s: HoloState): void {
     this.state = s
+  }
+  /** 작업 중 표시 켜기/끄기 — 말하기·듣기 상태와 겹쳐서 계속 보인다 */
+  setWorking(on: boolean): void {
+    this.working = on
   }
   getState(): HoloState {
     return this.state
@@ -189,10 +201,14 @@ export class HologramScene {
     const dt = Math.min(this.clock.getDelta(), 0.05)
     const t = this.clock.elapsedTime
 
-    this.color.lerp(COLORS[this.state], 0.08)
+    this.workAmt = THREE.MathUtils.lerp(this.workAmt, this.working ? 1 : 0, 0.06)
+    const w = this.workAmt
+    // 작업 중이면 색이 호박색 쪽으로 (말하는 중엔 살짝만)
+    const tint = COLORS[this.state].clone().lerp(COLORS.thinking, this.state === 'speaking' || this.state === 'listening' ? w * 0.12 : w * 0.3)
+    this.color.lerp(tint, 0.08)
     for (const m of this.materials) m.color.copy(this.color)
 
-    const speed = this.state === 'thinking' ? 2.6 : this.state === 'listening' ? 1.4 : 0.6
+    const speed = (this.state === 'thinking' ? 2.6 : this.state === 'listening' ? 1.4 : 0.6) + w * 1.8
     this.spin.rotation.y += dt * 0.35 * speed
     this.spin.rotation.x = this.userRot.x
     this.root.rotation.y = this.userRot.y * 0.5
@@ -207,17 +223,57 @@ export class HologramScene {
     this.targetScale = this.userScale * (breathe + react)
     const s = THREE.MathUtils.lerp(this.root.scale.x, this.targetScale * (this.anchor ? 0.55 : 1), 0.15)
     this.root.scale.setScalar(s)
-    ;(this.glow.material as THREE.SpriteMaterial).opacity = 0.35 + react + (this.state === 'thinking' ? Math.sin(t * 8) * 0.1 : 0)
+    ;(this.glow.material as THREE.SpriteMaterial).opacity = 0.35 + react + (this.state === 'thinking' ? Math.sin(t * 8) * 0.1 : 0) + this.workAmt * 0.25 * Math.pow(Math.max(0, Math.sin(t * 4.2)), 8)
 
-    // 파티클 흔들림
+    // 작업 중: 홀로그램 몸체가 일한다
+    // ① 표면이 여러 방향의 물결로 계속 일렁인다 (계산하는 느낌)
+    const cpos = this.core.geometry.getAttribute('position') as THREE.BufferAttribute
+    const carr = cpos.array as Float32Array
+    if (w > 0.002) {
+      const a1 = t * 0.7
+      const ax = Math.cos(a1)
+      const az = Math.sin(a1)
+      for (let i = 0; i < carr.length; i += 3) {
+        const x = this.coreBase[i]
+        const y = this.coreBase[i + 1]
+        const z = this.coreBase[i + 2]
+        const d1 = x * ax + z * az
+        const wave = Math.sin(d1 * 7 - t * 6) * 0.07 + Math.sin(y * 5 + t * 4.3) * 0.05 + Math.sin((x - y + z) * 4 - t * 3.1) * 0.04
+        const k = 1 + wave * w
+        carr[i] = x * k
+        carr[i + 1] = y * k
+        carr[i + 2] = z * k
+      }
+      cpos.needsUpdate = true
+      this.coreDeformed = true
+    } else if (this.coreDeformed) {
+      carr.set(this.coreBase)
+      cpos.needsUpdate = true
+      this.coreDeformed = false
+    }
+    // ② 안쪽 코어가 빠르게 돌며 맥박친다
+    this.inner.rotation.y += dt * 3.2 * w
+    this.inner.rotation.x += dt * 2.1 * w
+    const beat = Math.pow(Math.max(0, Math.sin(t * 4.2)), 8)
+    this.inner.scale.setScalar(1 + w * (0.12 + beat * 0.32))
+
+    // 파티클 흔들림 (+ 작업 중엔 위아래로 오가는 스캔 띠)
     const pos = this.particles.geometry.getAttribute('position') as THREE.BufferAttribute
     const arr = pos.array as Float32Array
-    const amp = 0.04 + this.level * 0.25 + (this.state === 'thinking' ? 0.06 : 0)
+    const amp = 0.04 + this.level * 0.25 + (this.state === 'thinking' ? 0.06 : 0) + w * 0.03
     for (let i = 0; i < arr.length; i += 3) {
-      const k = 1 + Math.sin(t * 2.2 + i * 0.013) * amp
-      arr[i] = this.particleBase[i] * k
-      arr[i + 1] = this.particleBase[i + 1] * k
-      arr[i + 2] = this.particleBase[i + 2] * k
+      const bx = this.particleBase[i]
+      const by = this.particleBase[i + 1]
+      const bz = this.particleBase[i + 2]
+      // ③ 작업 중: 입자들이 소용돌이치며 코어로 빨려 들어갔다가 퍼진다 (데이터를 처리하는 흐름)
+      const inhale = w * 0.5 * (0.5 + 0.5 * Math.sin(t * 2.6 + i * 0.0021))
+      const k = (1 + Math.sin(t * 2.2 + i * 0.013) * amp) * (1 - inhale)
+      const a = w * (t * 1.8 + by * 1.6)
+      const ca = Math.cos(a)
+      const sa = Math.sin(a)
+      arr[i] = (bx * ca - bz * sa) * k
+      arr[i + 1] = by * k
+      arr[i + 2] = (bx * sa + bz * ca) * k
     }
     pos.needsUpdate = true
 

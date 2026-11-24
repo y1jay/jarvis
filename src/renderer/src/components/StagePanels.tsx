@@ -2,7 +2,7 @@
 // 끌어서 이동, 모서리로 크기 조절, 닫기. 위치/크기는 기억한다.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
-export type PopupKind = 'browser' | 'device'
+export type PopupKind = 'browser' | 'device' | 'app'
 export interface Rect {
   x: number
   y: number
@@ -12,7 +12,8 @@ export interface Rect {
 
 const DEFAULTS: Record<PopupKind, Rect> = {
   browser: { x: 290, y: 70, w: 760, h: 620 },
-  device: { x: 640, y: 60, w: 380, h: 760 }
+  device: { x: 640, y: 60, w: 380, h: 760 },
+  app: { x: 330, y: 80, w: 720, h: 560 }
 }
 
 export function loadRect(kind: PopupKind): Rect {
@@ -267,6 +268,125 @@ export function DevicePopup({ rect, z, onRect, onFocus, onClose }: { rect: Rect;
           />
         </div>
       )}
+    </FloatingWindow>
+  )
+}
+
+/**
+ * 앱 비춰 보기 팝업 (카카오톡 등 웹 버전이 없는 앱): 실제 앱 창을 실시간으로 보여 주고,
+ * 화면을 누르면 그 자리를 실제 앱에서 누르고, 아래 입력칸에 쓰면 실제 앱에 입력한다.
+ */
+export function AppMirrorPopup({ app, rect, z, onRect, onFocus, onClose }: { app: string; rect: Rect; z: number; onRect: (r: Rect) => void; onFocus: () => void; onClose: () => void }): ReactNode {
+  const [wins, setWins] = useState<Array<{ id: string; title: string }>>([])
+  const [cur, setCur] = useState<{ id: string; title: string } | null>(null)
+  const [msg, setMsg] = useState('창을 찾는 중…')
+  const [txt, setTxt] = useState('')
+  const video = useRef<HTMLVideoElement>(null)
+
+  // 창 목록 (앱이 막 열렸을 수 있어 몇 번 다시 찾는다)
+  const refresh = useCallback(async (): Promise<void> => {
+    for (let i = 0; i < 8; i++) {
+      const list = await window.jarvis.mirror.windows(app)
+      if (list.length) {
+        setWins(list)
+        setCur((c) => (c && list.some((w) => w.id === c.id) ? c : list[0]))
+        setMsg('')
+        return
+      }
+      await new Promise((r) => setTimeout(r, 700))
+    }
+    setMsg(`${app} 창을 찾지 못했어요. 앱이 열려 있는지, "화면 기록" 권한이 있는지 확인해 주세요.`)
+  }, [app])
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  // 고른 창을 실시간으로
+  useEffect(() => {
+    if (!cur) return
+    let stream: MediaStream | null = null
+    let cancelled = false
+    void navigator.mediaDevices
+      .getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: cur.id, maxFrameRate: 30 } } } as unknown as MediaStreamConstraints)
+      .then((s) => {
+        if (cancelled) return s.getTracks().forEach((t) => t.stop())
+        stream = s
+        if (video.current) {
+          video.current.srcObject = s
+          void video.current.play()
+        }
+      })
+      .catch((e: Error) => setMsg(`화면을 비추지 못했어요: ${e.message}`))
+    return () => {
+      cancelled = true
+      stream?.getTracks().forEach((t) => t.stop())
+    }
+  }, [cur])
+
+  /** 화면에서 누른 자리 → 창 안의 상대 위치 (0~1) */
+  const rel = (e: React.MouseEvent): { rx: number; ry: number } | null => {
+    const v = video.current
+    if (!v || !v.videoWidth) return null
+    const r = v.getBoundingClientRect()
+    const scale = Math.min(r.width / v.videoWidth, r.height / v.videoHeight)
+    const ox = r.left + (r.width - v.videoWidth * scale) / 2
+    const oy = r.top + (r.height - v.videoHeight * scale) / 2
+    const rx = (e.clientX - ox) / (v.videoWidth * scale)
+    const ry = (e.clientY - oy) / (v.videoHeight * scale)
+    return rx < 0 || ry < 0 || rx > 1 || ry > 1 ? null : { rx, ry }
+  }
+  const press = async (e: React.MouseEvent, o: { double?: boolean; right?: boolean } = {}): Promise<void> => {
+    e.preventDefault()
+    e.stopPropagation()
+    const p = rel(e)
+    if (!p || !cur) return
+    const r = await window.jarvis.mirror.click(app, cur.title, p.rx, p.ry, o)
+    if (!r.ok) setMsg(r.message)
+  }
+  const send = async (enter: boolean): Promise<void> => {
+    const r = await window.jarvis.mirror.type(app, txt, enter)
+    if (r.ok) setTxt('')
+    else setMsg(r.message)
+  }
+
+  return (
+    <FloatingWindow kind="app" testid="app-mirror" title={<>🪟 {app}{cur && cur.title !== app ? ` — ${cur.title}` : ''}</>} rect={rect} z={z} onRect={onRect} onFocus={onFocus} onClose={onClose}>
+      <div className="bbar">
+        {wins.length > 1 && (
+          <select value={cur?.id ?? ''} onChange={(e) => setCur(wins.find((w) => w.id === e.target.value) ?? null)}>
+            {wins.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.title}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="muted small">{msg || '화면을 누르면 실제 앱에서 눌립니다'}</span>
+        <span style={{ flex: 1 }} />
+        <button className="btn btn-ghost btn-xs" onClick={() => void refresh()}>
+          새로고침
+        </button>
+      </div>
+      <div className="eview mirror-view">
+        <video ref={video} muted playsInline onClick={(e) => void press(e)} onDoubleClick={(e) => void press(e, { double: true })} onContextMenu={(e) => void press(e, { right: true })} />
+      </div>
+      <div className="bbar">
+        <input
+          className="mirror-input"
+          placeholder={`${app} 에 입력 (Enter 로 보내기)`}
+          value={txt}
+          onChange={(e) => setTxt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              void send(true)
+            }
+          }}
+        />
+        <button className="btn btn-ghost btn-xs" onClick={() => void send(false)}>
+          입력만
+        </button>
+      </div>
     </FloatingWindow>
   )
 }

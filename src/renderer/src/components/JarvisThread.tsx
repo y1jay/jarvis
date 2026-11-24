@@ -13,7 +13,7 @@ const STATUS: Record<JobInfo['status'], string> = {
 
 const TASK_ICON = { pending: '○', running: '◐', done: '●', error: '✕' } as const
 
-export function JarvisThread({ jobs, onSend, onStop, onOpenSession }: { jobs: JobInfo[]; onSend: (t: string) => void; onStop: () => void; onOpenSession: (id: string) => void }): ReactNode {
+export function JarvisThread({ name = 'JARVIS', jobs, onSend, onStop, onOpenSession }: { name?: string; jobs: JobInfo[]; onSend: (t: string) => void; onStop: () => void; onOpenSession: (id: string) => void }): ReactNode {
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -51,7 +51,7 @@ export function JarvisThread({ jobs, onSend, onStop, onOpenSession }: { jobs: Jo
             )}
             <div className="msg msg-ai">
               <div className="msg-meta">
-                <span className="msg-who">JARVIS</span>
+                <span className="msg-who">{name}</span>
                 {j.status !== 'done' && j.status !== 'error' && <span className="msg-live">● {STATUS[j.status]}</span>}
                 {j.status === 'error' && <span className="msg-err">실패</span>}
               </div>

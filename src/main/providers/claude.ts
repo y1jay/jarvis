@@ -58,6 +58,7 @@ export class ClaudeProvider implements AgentProvider {
   private ctx: TurnContext | null = null
   private turnDone: (() => void) | null = null
   private streamedText = false
+  private background = 0
 
   sessionId(): string | null {
     return this.session
@@ -76,6 +77,10 @@ export class ClaudeProvider implements AgentProvider {
     if (!this.live) return
     const live = this.live
     this.live = null
+    if (this.background) {
+      this.background = 0
+      this.ctx?.emit({ kind: 'background', count: 0, tasks: [] })
+    }
     live.input.close()
     live.q.close?.()
     // 진행 중이던 턴이 있으면 여기서 끝낸다 (닫힌 프로세스의 종료 신호가 다음 턴을 끝내 버리지 않게)
@@ -211,6 +216,11 @@ export class ClaudeProvider implements AgentProvider {
         if (m.subtype === 'init') {
           this.session = m.session_id
           ctx.emit({ kind: 'session', sessionId: m.session_id, model: m.model })
+        } else if ((m.subtype as string) === 'background_tasks_changed') {
+          // 뒤에서 도는 작업 목록 (바뀔 때마다 전체가 온다) — 활동이 아닌 감시용(ambient)은 뺀다
+          const tasks = ((m as unknown as { tasks?: Array<{ description: string; ambient?: boolean }> }).tasks ?? []).filter((x) => !x.ambient)
+          this.background = tasks.length
+          ctx.emit({ kind: 'background', count: tasks.length, tasks: tasks.map((x) => x.description) })
         }
         break
       case 'stream_event': {
@@ -251,6 +261,11 @@ export class ClaudeProvider implements AgentProvider {
       case 'result': {
         const isError = m.subtype !== 'success'
         const text = m.subtype === 'success' ? m.result : (m.errors ?? []).join('\n') || m.subtype
+        // 사용자가 보낸 차례가 아닌데 결과가 왔다 = 뒤에서 하던 작업을 마치고 AI 가 낸 완료 보고
+        if (!this.turnDone) {
+          if (text?.trim() && !isError) ctx.emit({ kind: 'followup', text })
+          break
+        }
         ctx.emit({ kind: 'result', text, isError, costUsd: m.total_cost_usd, durationMs: m.duration_ms })
         this.finishTurn()
         break

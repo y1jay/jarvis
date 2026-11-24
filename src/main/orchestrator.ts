@@ -26,6 +26,8 @@ interface SessionRec {
   info: SessionInfo
   provider: AgentProvider
   chain: Promise<unknown>
+  /** 뒤 작업이 끝나고 AI 의 완료 보고를 기다리는 중 */
+  awaitingReport?: ReturnType<typeof setTimeout> | null
 }
 
 export interface PlannedTask {
@@ -237,6 +239,7 @@ export class Orchestrator {
       let lastText = ''
       let streamed = ''
       let resultText = ''
+      let turnRunning = false
       let isError = false
       const errors: string[] = []
       const emit = (event: AgentEvent): void => {
@@ -251,9 +254,33 @@ export class Orchestrator {
         } else if (event.kind === 'error') {
           isError = true
           errors.push(event.message)
+        } else if (event.kind === 'background') {
+          // 뒤에서 도는 작업이 남아 있는 동안은 이 세션을 '작업 중'으로.
+          // 다 끝나도 AI 가 완료 보고를 쓰는 동안은 계속 작업 중 (보고가 오거나 90초가 지나면 끝)
+          const had = info.background ?? 0
+          info.background = event.count
+          if (event.count > 0) info.status = 'running'
+          else if (had > 0) {
+            rec.awaitingReport = setTimeout(() => {
+              rec.awaitingReport = null
+              if (!info.background && info.status === 'running') {
+                info.status = 'idle'
+                this.publish()
+              }
+            }, 90_000)
+          } else if (!turnRunning) info.status = 'idle'
+          this.publish()
+        } else if (event.kind === 'followup') {
+          if (rec.awaitingReport) clearTimeout(rec.awaitingReport)
+          rec.awaitingReport = null
+          if (!info.background && !turnRunning) {
+            info.status = 'idle'
+            this.publish()
+          }
         }
         this.d.onEvent({ turnId, sessionId, provider: info.provider, event })
       }
+      turnRunning = true
       try {
         await rec.provider.send(prompt, this.d.buildContext({ ...info }, turnId, emit))
       } catch (e) {
@@ -261,7 +288,8 @@ export class Orchestrator {
         errors.push((e as Error).message)
         this.d.onEvent({ turnId, sessionId, provider: info.provider, event: { kind: 'error', message: (e as Error).message } })
       } finally {
-        info.status = isError ? 'error' : 'idle'
+        turnRunning = false
+        info.status = isError ? 'error' : info.background || rec.awaitingReport ? 'running' : 'idle'
         info.lastActive = Date.now()
         this.publish()
         this.d.onTurnDone({ turnId, sessionId, provider: info.provider })

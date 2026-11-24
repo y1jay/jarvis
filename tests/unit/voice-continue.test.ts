@@ -303,3 +303,46 @@ describe('대답은 무조건 먼저', () => {
     expect(spoken).toEqual(['지금은 오후 5시예요.'])
   })
 })
+
+describe('말이 겹치지 않게', () => {
+  let active = 0
+  let maxActive = 0
+  let spoken: string[] = []
+  beforeEach(() => {
+    active = 0
+    maxActive = 0
+    spoken = []
+    vi.stubGlobal('speechSynthesis', {
+      cancel: () => undefined,
+      getVoices: () => [],
+      speak: (u: { text: string; onend?: () => void }) => {
+        active++
+        maxActive = Math.max(maxActive, active)
+        spoken.push(u.text)
+        setTimeout(() => {
+          active--
+          u.onend?.()
+        }, 400)
+      }
+    })
+    vi.stubGlobal('SpeechSynthesisUtterance', class { constructor(public text: string) {} })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+  it('[실제 재현] "네, 잠깐만요" 도중 대답 문장이 들어와도 동시에 나오지 않고 차례대로', async () => {
+    vi.useFakeTimers()
+    const e = new VoiceEngine({ model: 'x', language: 'korean', wakeWords: ['자비스'], wakeWordEnabled: true, ttsVoice: null, ttsRate: 1 }, { onPhase: () => undefined, onLevel: () => undefined, onTranscript: () => undefined, onCommand: () => undefined, onWake: () => undefined, onProgress: () => undefined, onError: () => undefined })
+    const p = e as unknown as Record<string, unknown>
+    p.stream = {}
+    p.speakEndedAt = -1e9
+    e.expectReply()
+    await vi.advanceTimersByTimeAsync(650) // 맞장구 시작
+    e.enqueue('다운로드 폴더를 열었어요.')
+    e.enqueue('파일이 194개 있어요.')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(maxActive).toBe(1)
+    expect(spoken).toEqual(['네, 잠깐만요.', '다운로드 폴더를 열었어요.', '파일이 194개 있어요.'])
+  })
+})

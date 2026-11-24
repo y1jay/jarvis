@@ -7,7 +7,7 @@ import { HandTracker } from './vision/handTracker'
 import type { HandState } from './vision/gestures'
 import { VoiceEngine, type VoicePhase } from './voice/VoiceEngine'
 import { isStopCommand, matchWakeWord, takeSentences } from './voice/text'
-import { effectiveWakeWords } from '../../shared/wake'
+import { brandName, effectiveWakeWords, shortName } from '../../shared/wake'
 import { ChatPanel } from './components/ChatPanel'
 import { JarvisThread } from './components/JarvisThread'
 import { SessionList } from './components/SessionList'
@@ -18,7 +18,8 @@ import { ProviderPanel } from './components/ProviderPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ApprovalModal } from './components/ApprovalModal'
 import { QuestionCard, type Q } from './components/QuestionCard'
-import { BrowserPopup, DevicePopup, loadRect, overlaps, type PopupKind, type Rect } from './components/StagePanels'
+import { CodeFeed, toFeedLines, type FeedLine } from './components/CodeFeed'
+import { AppMirrorPopup, BrowserPopup, DevicePopup, loadRect, overlaps, type PopupKind, type Rect } from './components/StagePanels'
 
 type Tab = 'chat' | 'git' | 'history' | 'memory' | 'settings'
 
@@ -71,6 +72,10 @@ export function App(): ReactNode {
   useEffect(() => localStorage.setItem('jarvis.sideOpen', sideOpen ? '1' : '0'), [sideOpen])
   useEffect(() => window.jarvis.app.onSide((open) => setSideOpen(open)), [])
   useEffect(() => window.jarvis.app.onTab((t) => setTab(t as Tab)), [])
+  // 이름을 바꾸면 창 제목도
+  useEffect(() => {
+    if (settings) document.title = brandName(settings.assistantName)
+  }, [settings?.assistantName])
   // 목소리 엔진 설치·준비 상태 알림
   useEffect(
     () =>
@@ -86,8 +91,15 @@ export function App(): ReactNode {
     if (questions.length) setPanelOpen(true)
   }, [questions.length])
   // 홀로그램은 항상 기본 화면. 웹/기기는 그 위에 뜨는 팝업
-  const [popups, setPopups] = useState<Record<PopupKind, boolean>>({ browser: false, device: false })
-  const [rects, setRects] = useState<Record<PopupKind, Rect>>(() => ({ browser: loadRect('browser'), device: loadRect('device') }))
+  const [popups, setPopups] = useState<Record<PopupKind, boolean>>({ browser: false, device: false, app: false })
+  const [rects, setRects] = useState<Record<PopupKind, Rect>>(() => ({ browser: loadRect('browser'), device: loadRect('device'), app: loadRect('app') }))
+  // 비춰 보는 앱 (카카오톡 등)
+  const [mirrorApp, setMirrorApp] = useState<string | null>(null)
+  // 코드 흐름 (JARVIS 가 고치는 코드만 터미널처럼)
+  const [feed, setFeed] = useState<FeedLine[]>([])
+  const [feedOpen, setFeedOpen] = useState(false)
+  const feedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const feedSeq = useRef(0)
   const [front, setFront] = useState<PopupKind>('browser')
   const openPopup = useCallback((k: PopupKind) => {
     setPopups((p) => ({ ...p, [k]: true }))
@@ -183,6 +195,8 @@ export function App(): ReactNode {
     const st = h.getState()
     if (busy && (st === 'idle' || st === 'error')) h.setState('thinking')
     if (!busy && st === 'thinking') h.setState('idle')
+    // 작업이 도는 동안은 말하기·듣기 중에도 '일하는 중' 표시를 계속
+    h.setWorking(busy)
   }, [busy])
 
   const speak = useCallback((text: string, followUp = false) => {
@@ -214,6 +228,16 @@ export function App(): ReactNode {
       ),
       window.jarvis.agent.onEvent(({ turnId, sessionId, event }) => {
         if (event.kind === 'file-change') setRefreshKey((k) => k + 1)
+        if (event.kind === 'tool-use') {
+          const add = toFeedLines(event.name, event.input)
+          if (add.length) {
+            setFeed((f) => [...f, ...add.map((l) => ({ ...l, id: ++feedSeq.current }))].slice(-800))
+            setFeedOpen(true)
+            // 30초 동안 새 코드가 없으면 저절로 사라진다 (</> 로 다시 볼 수 있음)
+            if (feedTimer.current) clearTimeout(feedTimer.current)
+            feedTimer.current = setTimeout(() => setFeedOpen(false), 30_000)
+          }
+        }
         setSessionTurns((m) => ({ ...m, [sessionId]: (m[sessionId] ?? []).map((t) => (t.id === turnId ? applyEvent(t, event) : t)) }))
       }),
       window.jarvis.agent.onDone(({ turnId, sessionId }) => {
@@ -262,6 +286,15 @@ export function App(): ReactNode {
       window.jarvis.question.onAsk((q) => setQuestions((qs) => (qs.some((x) => x.id === q.id) ? qs : [...qs, q]))),
       window.jarvis.question.onDone((id) => setQuestions((qs) => qs.filter((x) => x.id !== id))),
       window.jarvis.popup.onOpen((k) => openPopup(k)),
+      window.jarvis.mirror.onOpen(({ app }) => {
+        setMirrorApp(app)
+        openPopup('app')
+      }),
+      window.jarvis.popup.onClose((k) => setPopups((p) => (k === 'all' ? { browser: false, device: false, app: false } : { ...p, [k]: false }))),
+      window.jarvis.mirror.onClose((app) => setMirrorApp((cur) => {
+        if (cur === app) setPopups((p) => ({ ...p, app: false }))
+        return cur
+      })),
       window.jarvis.app.onSummon(() => void voice.current?.wake()),
       window.jarvis.settings.onChanged((s) => {
         setSettings(s)
@@ -486,7 +519,7 @@ export function App(): ReactNode {
           {sideOpen ? '⟨' : '☰'}
         </button>
         <div className="brand">
-          <span className="brand-mark">◉</span> J.A.R.V.I.S.
+          <span className="brand-mark">◉</span> {brandName(settings.assistantName)}
         </div>
         <div className="titlebar-mid">
           {PROVIDER_LABEL[settings.provider]} · {projectName}
@@ -577,6 +610,7 @@ export function App(): ReactNode {
               </div>
             )}
           </div>
+          {feedOpen && feed.length > 0 && <CodeFeed lines={feed.slice(-120)} />}
           <div className="stage-controls">
             <button className={`orb ${phase !== 'off' ? 'orb-on' : ''}`} data-testid="mic-toggle" onClick={() => void toggleVoice()} title="음성 켜기/끄기">
               🎙
@@ -592,6 +626,9 @@ export function App(): ReactNode {
             </button>
             <button className={`orb ${popups.device ? 'orb-on' : ''}`} data-testid="open-device" onClick={() => openPopup('device')} title="테스트 기기 (아이폰 시뮬레이터 / 안드로이드)">
               📱
+            </button>
+            <button className={`orb ${feedOpen ? 'orb-on' : ''}`} data-testid="toggle-feed" onClick={() => setFeedOpen((v) => !v)} title={feedOpen ? '코드 흐름 닫기' : '코드 흐름 보기 (JARVIS 가 고친 코드)'}>
+              <span className="orb-code">{'</>'}</span>
             </button>
             <button className={`orb ${panelOpen ? 'orb-on' : ''}`} data-testid="toggle-panel" onClick={() => setPanelOpen((v) => !v)} title={panelOpen ? '대화창 닫기' : '대화창 열기'}>
               💬
@@ -626,7 +663,7 @@ export function App(): ReactNode {
           <div className="panel-body">
             {questions[0] && <QuestionCard q={questions[0]} voice={phase !== 'off'} onAnswer={(v) => void window.jarvis.question.answer(questions[0].id, v)} />}
             {tab === 'chat' && !viewingSession && (
-              <JarvisThread jobs={jobs} onSend={(t) => void send(t)} onStop={() => void window.jarvis.agent.interrupt()} onOpenSession={viewSession} />
+              <JarvisThread name={shortName(settings.assistantName)} jobs={jobs} onSend={(t) => void send(t)} onStop={() => void window.jarvis.agent.interrupt()} onOpenSession={viewSession} />
             )}
             {tab === 'chat' && viewingSession && (
               <div className="session-view" data-testid="session-view">
@@ -660,7 +697,7 @@ export function App(): ReactNode {
           rect={rects.browser}
           z={front === 'browser' ? 60 : 50}
           // 네이티브 웹 뷰는 HTML 위에 그려지므로: 승인 창이 떠 있거나, 기기 팝업이 앞에서 겹치면 숨긴다
-          hidden={approvals.length > 0 || (popups.device && front === 'device' && overlaps(rects.browser, rects.device))}
+          hidden={approvals.length > 0 || (popups.device && front === 'device' && overlaps(rects.browser, rects.device)) || (popups.app && front === 'app' && overlaps(rects.browser, rects.app))}
           onRect={(r) => setRects((x) => ({ ...x, browser: r }))}
           onFocus={() => setFront('browser')}
           onClose={() => {
@@ -676,6 +713,17 @@ export function App(): ReactNode {
           onRect={(r) => setRects((x) => ({ ...x, device: r }))}
           onFocus={() => setFront('device')}
           onClose={() => setPopups((p) => ({ ...p, device: false }))}
+        />
+      )}
+      {popups.app && mirrorApp && (
+        <AppMirrorPopup
+          key={mirrorApp}
+          app={mirrorApp}
+          rect={rects.app}
+          z={front === 'app' ? 60 : 50}
+          onRect={(r) => setRects((x) => ({ ...x, app: r }))}
+          onFocus={() => setFront('app')}
+          onClose={() => setPopups((p) => ({ ...p, app: false }))}
         />
       )}
       {approvals[0] && <ApprovalModal req={approvals[0]} voice={phase !== 'off'} onRespond={(ok, reason) => respond(ok, reason)} />}

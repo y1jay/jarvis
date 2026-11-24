@@ -13,6 +13,7 @@ import { DialogContext } from './dialog'
 import { CORRECT_BELOW_LOGPROB, SpeechCorrector } from './corrector'
 import { enginesFor, TtsHub, voiceById, VOICE_CATALOG } from './tts'
 import { cer, MIN_SAMPLES, usableSamples, VoiceTrainer } from './learn'
+import { appWindows, mirrorClick, mirrorType, webAppUrl, windowBounds } from './mirror'
 import { ClaudeProvider } from './providers/claude'
 import { CodexProvider } from './providers/codex'
 import { GeminiProvider } from './providers/gemini'
@@ -28,7 +29,7 @@ import { isAuthError, isContinuation, isOtherRequest, isRepeatRequest, parsePane
 import { Asker, resolveChoice, type QuestionKind } from './asker'
 import { DeviceHub, parseDeviceIntent, type Platform } from './devices'
 import { androidReleasePlaybook, parseReleaseIntent } from './release'
-import { DEFAULT_NAME, parseRenameIntent } from '../shared/wake'
+import { brandName, DEFAULT_NAME, parseRenameIntent } from '../shared/wake'
 import { FastChat, isCodeWork, needsAgent } from './fastchat'
 import { isClamshell, KeepAwake, wakeDisplay } from './power'
 import { buildVocabPrompt, defaultModelKey, MODELS, NativeStt, sttBinaryPath } from './stt'
@@ -72,9 +73,10 @@ function trayIcon(): Electron.NativeImage {
 function buildTray(): void {
   if (!tray) {
     tray = new Tray(trayIcon())
-    tray.setToolTip('J.A.R.V.I.S.')
     tray.on('click', () => showWindow())
   }
+  // 이름을 바꾸면 트레이 이름도
+  tray!.setToolTip(brandName(settings.get().assistantName))
   const s = settings.get()
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -425,7 +427,8 @@ function jarvisTools(sessionId: string): ReturnType<typeof createJarvisTools> {
     ask: (question, opts) => askUser(question, { ...opts, from: 'Claude' }),
     siteLogin: (s) => siteLogin(s),
     startDevice: (platform, name) => startDevice(platform, name),
-    stopDevice: () => stopDevice()
+    stopDevice: () => stopDevice(),
+    openAppInJarvis: (q, a, via) => openAppInJarvis(q, a, via)
   })
   toolsBySession.set(sessionId, created)
   return created
@@ -471,6 +474,7 @@ function buildOrchestrator(): Orchestrator {
     },
     onJob: (job) => emitJob(job),
     onEvent: (e) => {
+      if (e.event.kind === 'followup') deliverFollowup(e.sessionId, e.event.text)
       const b = turnBuf.get(e.turnId)
       if (b) {
         const ev = e.event
@@ -868,7 +872,10 @@ async function handleRequest(job: JobInfo): Promise<void> {
     const next = settings.update({ assistantName: newName })
     send('settings:changed', next)
     audit.record({ action: 'settings.changed', provider: 'jarvis', detail: { keys: ['assistantName'], before: { assistantName: before }, after: { assistantName: newName }, via: 'command' } })
-    return void finishJob(job, `알겠습니다. 이제부터 "헤이 ${newName}" 또는 "${newName}"라고 불러 주세요. "헤이 자비스"도 계속 됩니다.`)
+    // 화면·트레이 이름, 말투(빠른 대화 모델의 자기소개)도 새 이름으로
+    buildTray()
+    fastChat.close()
+    return void finishJob(job, `알겠습니다. 이제 제 이름은 ${newName}예요. "헤이 ${newName}" 또는 "${newName}"라고 불러 주세요. "헤이 자비스"도 계속 됩니다.`)
   }
 
   // 1) 모델 연결/전환/해제
@@ -988,8 +995,28 @@ async function handleRequest(job: JobInfo): Promise<void> {
   // 3) 앱 종료
   const quit = generated ? null : parseQuitIntent(text)
   if (quit) {
+    // "창 닫아", "그거 닫아", "다 닫아" → JARVIS 화면에 떠 있는 팝업 닫기
+    if (/^(창|그거|이거|저거|팝업|화면|브라우저|웹|웹\s*창|전부|다|모두|열린\s*거|띄운\s*거)$/.test(quit.target)) {
+      browser.close()
+      send('popup:close', 'all')
+      audit.record({ action: 'system.app.quit', provider: 'jarvis', target: 'popups', detail: { query: quit.target, via: 'command' } })
+      if (!quit.rest) return void finishJob(job, '닫았습니다.')
+      text = quit.rest
+    } else if (webAppUrl(quit.target)) {
+      // 웹으로 연 앱(슬랙·크롬 …)은 JARVIS 브라우저를 닫는다
+      browser.close()
+      send('popup:close', 'browser')
+      audit.record({ action: 'system.app.quit', provider: 'jarvis', target: quit.target, detail: { inJarvis: true, via: 'command' } })
+      if (!quit.rest) return void finishJob(job, `${quit.target} 을(를) 닫았습니다.`)
+      text = quit.rest
+    }
+  }
+  const quitApp2 = quit && text === quit.rest ? null : quit
+  if (quitApp2) {
+    const quit = quitApp2
     const a = resolveApp(quit.target, listApps())
     if (a) {
+      send('mirror:close', a.name)
       const r = await quitApp(a.name)
       audit.record({ action: 'system.app.quit', provider: 'jarvis', target: a.name, detail: { query: quit.target, ok: r.ok, via: 'command' } })
       note(job, `⏻ ${r.message}`)
@@ -1046,10 +1073,10 @@ async function handleRequest(job: JobInfo): Promise<void> {
           openProject(target.path, 'agent')
           note(job, `📁 프로젝트 열기: ${target.path}`)
         } else if (target.kind === 'app') {
-          const res = await openApp(target.app)
-          audit.record({ action: 'system.app.open', provider: 'jarvis', target: target.app.name, detail: { query: intent.query, path: target.app.path, ok: res.ok, via: 'command' } })
+          const res = await openAppInJarvis(intent.query, target.app, 'command')
           note(job, `▶ ${res.message}`)
           if (!res.ok) return void finishJob(job, `${target.app.name} 실행에 실패했습니다: ${res.message}`, 'error')
+          if (!intent.rest) return void finishJob(job, res.message)
         } else if (target.kind === 'url') {
           const res = await openUrl(target.url)
           audit.record({ action: 'system.url.open', provider: 'jarvis', target: target.url, detail: { query: intent.query, via: 'command' } })
@@ -1124,6 +1151,43 @@ async function handleRequest(job: JobInfo): Promise<void> {
 /** 권한 설정 화면은 실행당 한 번만 자동으로 연다 */
 const openedPrivacy = new Set<string>()
 
+/**
+ * 앱을 JARVIS 화면 안에서 연다
+ *  - 웹 버전이 있는 앱(슬랙·크롬·노션 …) → JARVIS 브라우저 팝업
+ *  - 그 외(카카오톡 등) → 실제 앱을 열고, 그 창을 JARVIS 팝업에 비춘다 (팝업에서 클릭·입력 가능)
+ */
+async function openAppInJarvis(query: string, app: AppEntry | null, via: string): Promise<{ ok: boolean; message: string }> {
+  const web = webAppUrl(query) ?? (app ? webAppUrl(app.name) : null)
+  if (web) {
+    await browser.open(web)
+    audit.record({ action: 'system.url.open', provider: 'jarvis', target: web, detail: { query, via, inJarvis: true } })
+    return { ok: true, message: `JARVIS 화면에서 ${app?.name ?? query} 을(를) 열었습니다.` }
+  }
+  if (!app) return { ok: false, message: `${query} 앱을 찾지 못했습니다.` }
+  const r = await openApp(app)
+  audit.record({ action: 'system.app.open', provider: 'jarvis', target: app.name, detail: { query, path: app.path, ok: r.ok, via, mirror: true } })
+  if (!r.ok) return r
+  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
+    void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture').catch(() => undefined)
+    return { ok: true, message: `${app.name} 을(를) 열었어요. JARVIS 화면 안에 비춰 보이려면 "화면 및 시스템 오디오 기록"에서 JARVIS 를 허용해 주세요 (설정 화면을 열었어요).` }
+  }
+  send('mirror:open', { app: app.name })
+  return { ok: true, message: `${app.name} 을(를) JARVIS 화면에 띄웠어요.` }
+}
+
+/** 뒤에서 하던 작업을 마치고 AI 가 낸 완료 보고 → 대화창에 JARVIS 메시지로, 말로도 알린다 */
+function deliverFollowup(sessionId: string, text: string): void {
+  const sess = orch.list().find((x) => x.id === sessionId)
+  const job: JobInfo = { id: randomUUID(), prompt: `(${sess?.title ?? '작업'} — 뒤에서 하던 작업 완료)`, status: 'done', tasks: [], notes: [], via: 'voice', createdAt: Date.now(), answer: text }
+  emitJob(job)
+  send('jarvis:job-done', structuredClone(job))
+  convo.record(jobToRecord(job, sess?.provider ?? settings.get().provider, 'voice'))
+  jobLane.set(job.id, `agent:${sess?.projectDir ?? 'general'}`)
+  rememberDialog(job)
+  audit.record({ action: 'agent.followup', provider: sess?.provider ?? 'claude', project: sess?.projectDir ?? undefined, detail: { session: sess?.title, chars: text.length } })
+  refreshBrain()
+}
+
 /** 방금 받아 적은 말에서 나온 문장인지 (호출어를 뺀 명령 포함) */
 function heardJustNow(text: string): boolean {
   if (!lastHeard || Date.now() - lastHeard.at > 30_000) return false
@@ -1157,7 +1221,7 @@ async function correctHeard(raw: string, q: { question?: string; options?: strin
   if (!q.options?.length && isKnownCommand(raw)) return raw
   const t0 = Date.now()
   const recent = [talk.recentText(3, settings.get().assistantName), q.question ? `${settings.get().assistantName}: ${q.question}` : ''].filter(Boolean).join('\n')
-  const fixed = await corrector.correct(raw, { recent, options: q.options, words: [...speechLex.topWords(25), ...settings.get().recentProjects.map((d) => d.split(/[\\/]/).pop() ?? '')], name: settings.get().assistantName })
+  const fixed = await corrector.correct(raw, { recent, options: q.options, lastCommand: talk.lastUser() ?? undefined, words: [...speechLex.topWords(25), ...settings.get().recentProjects.map((d) => d.split(/[\\/]/).pop() ?? '')], name: settings.get().assistantName })
   if (fixed !== raw) {
     audit.record({ action: 'voice.correct', provider: 'jarvis', detail: { heard: raw, corrected: fixed, logprob: lastHeard?.logprob, ms: Date.now() - t0 } })
     markCorrected(raw, fixed)
@@ -1369,6 +1433,22 @@ function registerIpc(): void {
     // 전에 잘못 알아들었다가 바로잡은 말이면, 배운 대로 고친다
     const fixed = settings.get().voice.learning ? speechLex.fix(heard) : null
     return fixed ?? heard
+  })
+  // ── 앱 비춰 보기 ──
+  h('mirror:windows', (app: string) => appWindows(app))
+  h('mirror:bounds', (app: string, title: string) => windowBounds(app, title))
+  h('mirror:click', async (app: string, title: string, rx: number, ry: number, o: { double?: boolean; right?: boolean } = {}) => {
+    const r = await mirrorClick(app, title, rx, ry, o)
+    audit.record({ action: 'mirror.click', provider: 'jarvis', target: app, detail: { title, rx: Math.round(rx * 1000) / 1000, ry: Math.round(ry * 1000) / 1000, ...o, ok: r.ok } })
+    // 누른 뒤 JARVIS 를 다시 앞으로 (비춰 보는 화면이 가려지지 않게)
+    setTimeout(() => showWindow(), 250)
+    return r
+  })
+  h('mirror:type', async (app: string, text: string, enter: boolean) => {
+    const r = await mirrorType(app, text, enter, { read: () => clipboard.readText(), write: (t) => clipboard.writeText(t) })
+    audit.record({ action: 'mirror.type', provider: 'jarvis', target: app, detail: { chars: text.length, enter } })
+    setTimeout(() => showWindow(), 250)
+    return r
   })
   h('tts:speak', async (text: string) => {
     const id = settings.get().voice.ttsVoiceId

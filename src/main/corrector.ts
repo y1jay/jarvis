@@ -10,6 +10,8 @@ import { editDistance, soundKey } from '../renderer/src/voice/text'
 export const CORRECT_BELOW_LOGPROB = -0.16
 
 export interface CorrectionContext {
+  /** 사용자가 바로 앞에 한 명령 (그대로 반복으로 바꾸지 않게) */
+  lastCommand?: string
   /** 최근 대화 ("사용자: …\nJARVIS: …") */
   recent: string
   /** 지금 묻고 있는 질문의 선택지 */
@@ -34,6 +36,8 @@ const SYSTEM = [
   '- (JARVIS: 슬랙으로 보낼까요?) "그래 보내 줘" → "그래 보내 줘" (맞으니 그대로)',
   '- "지금 몇 실까" → "지금 몇 시야"',
   '- (JARVIS: 사진 폴더만 있어요) "사진 발고 없어?" → "사진 말고 없어?"',
+  '- (JARVIS: 슬랙을 열었어요) "슬랙 가자" → "슬랙 닫아" (방금 연 걸 또 열라는 말이 아니라 발음이 가장 가까운 "닫아")',
+  '열기/닫기처럼 반대되는 명령은 발음으로 가린다 (방금 연 것을 또 열라는 말로 단정하지 않는다).',
   '',
   '출력: 바로잡은 문장 한 줄만. 따옴표, 설명, 접두어 금지.'
 ].join('\n')
@@ -51,11 +55,14 @@ export function correctionPrompt(raw: string, c: CorrectionContext): string {
 }
 
 /** 모델 출력이 '교정'으로 볼 만한지 — 너무 길어지거나 설명이 붙으면 버린다 */
-export function acceptCorrection(raw: string, out: string): string {
+export function acceptCorrection(raw: string, out: string, lastCommand?: string): string {
   const t = out.trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').split('\n')[0].trim()
   if (!t) return raw
   if (t.length > raw.length * 1.6 + 8) return raw
   if (/^(교정|수정|바로잡|정정|결과)\s*[:：]/.test(t)) return raw
+  // 방금 한 명령을 그대로 반복한 것으로 바꾸면 버린다 ("슬랙 닫아"가 "슬랙 열어"로 바뀐 일이 있었다)
+  const n = (x: string): string => x.replace(/[\s.,!?]/g, '')
+  if (lastCommand && n(t) === n(lastCommand) && n(raw) !== n(lastCommand)) return raw
   // 잘못 들은 말은 원래 말과 발음이 비슷해야 한다 — 전혀 다른 문장으로 바꾸면 버린다 ("나쁜 거야?" → "말투가 어때?")
   const a = soundKey(raw)
   const b = soundKey(t)
@@ -122,7 +129,7 @@ export class SpeechCorrector {
           return raw
         }
         const m = value as { type: string; subtype?: string; result?: string }
-        if (m.type === 'result') return m.subtype === 'success' ? acceptCorrection(raw, m.result ?? '') : raw
+        if (m.type === 'result') return m.subtype === 'success' ? acceptCorrection(raw, m.result ?? '', ctx.lastCommand) : raw
       }
     }
     const job = this.chain.then(run, run)

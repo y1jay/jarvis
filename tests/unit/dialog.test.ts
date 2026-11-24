@@ -79,3 +79,18 @@ describe('이어서 한 말 합치기', () => {
     expect(isContinuation(t)).toBe(false)
   })
 })
+
+describe('보정이 방금 한 명령을 되풀이하지 않게', () => {
+  it('[실제 재현] "슬랙, 가자" 를 앞 명령과 같은 "슬랙 열어" 로 바꾸면 버린다', async () => {
+    const { acceptCorrection } = await import('../../src/main/corrector')
+    expect(acceptCorrection('슬랙, 가자.', '슬랙 열어.', '슬랙 열어.')).toBe('슬랙, 가자.')
+    expect(acceptCorrection('슬랙, 가자.', '슬랙 닫아.', '슬랙 열어.')).toBe('슬랙 닫아.')
+  })
+  it('닫기 명령 해석', async () => {
+    const { parseQuitIntent } = await import('../../src/main/system')
+    expect(parseQuitIntent('슬랙 닫아')?.target).toBe('슬랙')
+    expect(parseQuitIntent('창 닫아')?.target).toBe('창')
+    expect(parseQuitIntent('다 닫아줘')?.target).toBe('다')
+    expect(parseQuitIntent('카톡 꺼줘')?.target).toBe('카톡')
+  })
+})
