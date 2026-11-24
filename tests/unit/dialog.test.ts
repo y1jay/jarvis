@@ -68,3 +68,14 @@ describe('문맥 보정 안전장치', () => {
     expect(acceptCorrection('열어줘', '열어줘 그리고 오늘 일정과 날씨와 뉴스까지 전부 정리해서 알려줘')).toBe('열어줘')
   })
 })
+
+describe('이어서 한 말 합치기', () => {
+  it.each(['해달라는 거야', '해 줘', '라고', '그리고 테스트도 돌려', '대화', '근데 그건 빼고'])('이어지는 말: %s', async (t) => {
+    const { isContinuation } = await import('../../src/main/intents')
+    expect(isContinuation(t)).toBe(true)
+  })
+  it.each(['지금 몇 시야', '다운로드 폴더 열어줘', '응', '그만', '목소리 바꿔줘', '안 남게 해달라고'])('새 요청: %s', async (t) => {
+    const { isContinuation } = await import('../../src/main/intents')
+    expect(isContinuation(t)).toBe(false)
+  })
+})

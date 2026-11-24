@@ -107,8 +107,12 @@ export function isRepeatRequest(t: string): boolean {
 }
 
 /** 음성 학습 / 기억 백업·복원 명령 */
-export function parseVoiceLearnIntent(t: string): 'setup' | 'status' | 'backup' | 'clear' | 'restore' | null {
+export function parseVoiceLearnIntent(t: string): 'setup' | 'status' | 'backup' | 'clear' | 'restore' | 'train' | 'revert' | null {
   const s = t.replace(/\s+/g, ' ').trim()
+  // "목소리 학습해줘", "내 목소리로 학습시켜", "음성 학습 돌려줘" — 모인 말소리로 맞춤 학습
+  if (/(목소리|음성|말소리)/.test(s) && /(학습\s*(시켜|돌려|진행|해\s*줘|해|하자|좀)|학습을?\s*(시작|돌려|해))/.test(s) && !/(암호|비밀번호|패스워드|상태|백업|지워|삭제|복원)/.test(s)) return 'train'
+  // "목소리 학습 되돌려", "맞춤 모델 빼줘"
+  if (/(목소리\s*학습|맞춤\s*모델|학습한\s*모델)/.test(s) && /(되돌려|원래대로|빼|취소|끄)/.test(s)) return 'revert'
   // "기억 백업해줘", "기억 전부 복원해줘", "백업 복원해줘", "자비스 데이터 가져와"
   if (/(기억|백업|학습|자비스\s*데이터)/.test(s) && /(복원|되살려|가져와|불러와|내려받아)/.test(s) && !/(파일|폴더|프로젝트|코드)/.test(s)) return 'restore'
   if (/^(기억|전부|모두|자비스\s*데이터)\s*(전부|다|모두)?\s*(깃에|깃허브에|git 에|git에)?\s*(백업|올려)/.test(s)) return 'backup'
@@ -117,7 +121,7 @@ export function parseVoiceLearnIntent(t: string): 'setup' | 'status' | 'backup' 
   if (/(백업|깃|git|저장소|올려|푸시)/.test(s)) return 'backup'
   if (/(지워|삭제|비워|초기화)/.test(s)) return 'clear'
   if (/(상태|얼마나|몇\s*개|확인|보여|알려)/.test(s)) return 'status'
-  if (/(시작|켜)/.test(s)) return 'setup'
+  if (/켜/.test(s)) return 'setup'
   return null
 }
 
@@ -169,4 +173,16 @@ export function timeAnswer(t: string, now = new Date()): string | null {
   }
   if (wantTime && wantDate) return `오늘은 ${date}, 지금은 ${ida(time)}.`
   return wantTime ? `지금은 ${ida(time)}.` : `오늘은 ${ida(date)}.`
+}
+
+/**
+ * 앞 요청에 이어 붙는 말인지 ("…안 나오게 돼" + "해달라는 거야", "…열어줘" + "그리고 테스트도")
+ * 혼자서는 뜻이 안 되는 꼬리말·접속어로 시작하거나, 한두 단어짜리 조각
+ */
+export function isContinuation(t: string): boolean {
+  const s = t.trim().replace(/[.!?]+$/, '')
+  if (!s) return false
+  if (/^(해\s*달라|해\s*줘|해\s*주|하라|라고|이라고|다고|라는|는\s*거|거야|도록|하고|그리고|그래서|근데|그러니까|그런데|아니\s*그|이랑|하고서|해서)/.test(s)) return true
+  const hangul = (s.match(/[가-힣]/g) ?? []).length
+  return hangul > 0 && hangul <= 3 && !/(응|네|아니|그래|좋아|싫어|멈춰|그만|취소|고마워)/.test(s)
 }

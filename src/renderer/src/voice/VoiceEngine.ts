@@ -21,6 +21,10 @@ export interface VoiceOptions {
   clamshell?: boolean
   /** 사람 같은 목소리 엔진 사용 (Qwen3/Supertonic) — main 이 문장을 소리로 만들어 준다. 실패하면 운영체제 목소리 */
   neural?: boolean
+  /** 지금 목소리 (바뀌면 "네, 잠깐만요" 같은 맞장구를 새 목소리로 다시 만들어 둔다) */
+  voiceKey?: string
+  /** 대답이 늦을 때 먼저 "네, 잠깐만요" 하기 (기본 켬) */
+  fillers?: boolean
 }
 
 export interface VoiceCallbacks {
@@ -111,7 +115,45 @@ export class VoiceEngine {
   ) {}
 
   updateOptions(o: Partial<VoiceOptions>): void {
+    const voiceChanged = (o.voiceKey !== undefined && o.voiceKey !== this.opts.voiceKey) || (o.neural !== undefined && o.neural !== this.opts.neural)
     this.opts = { ...this.opts, ...o }
+    if (voiceChanged) {
+      this.fillerCache.clear()
+      this.prefetchFillers()
+    }
+  }
+
+  /** 대답이 늦을 때 먼저 하는 말 */
+  static readonly FILLERS = { quick: '네, 잠깐만요.', long: '확인하고 있어요. 조금만 기다려 주세요.' }
+
+  /** 맞장구를 지금 목소리로 미리 만들어 둔다 */
+  prefetchFillers(): void {
+    if (!this.opts.neural || typeof window === 'undefined' || !window.jarvis?.tts) return
+    for (const t of Object.values(VoiceEngine.FILLERS)) if (!this.fillerCache.has(t)) this.fillerCache.set(t, window.jarvis.tts.speak(t).catch(() => null))
+  }
+
+  /**
+   * 명령을 받았다 — 대답이 바로 시작되지 않으면 먼저 "네, 잠깐만요" 라고 말하고, 오래 걸리면 한 번 더 알린다.
+   * 진짜 대답(speak/enqueue)이 시작되면 취소된다.
+   */
+  expectReply(): void {
+    this.clearReplyTimers()
+    if (this.opts.fillers === false) return
+    this.replyTimers.push(setTimeout(() => this.playFiller(VoiceEngine.FILLERS.quick), 600))
+    this.replyTimers.push(setTimeout(() => this.playFiller(VoiceEngine.FILLERS.long), 5000))
+  }
+
+  private clearReplyTimers(): void {
+    for (const t of this.replyTimers) clearTimeout(t)
+    this.replyTimers = []
+  }
+
+  private playFiller(text: string): void {
+    // 사용자가 말하는 중이거나 이미 뭔가 말하는 중이면 끼어들지 않는다
+    if (this.recording || this.phase === 'speaking' || this.queueRunning || !this.stream) return
+    const cached = this.fillerCache.get(text)
+    if (cached) this.synthCache.set(text, cached)
+    void this.say(text, false)
   }
 
   get current(): VoicePhase {
@@ -261,6 +303,7 @@ export class VoiceEngine {
     this.node.connect(this.ctx.destination)
     this.conversation = !this.opts.wakeWordEnabled
     this.setPhase(this.conversation ? 'awake' : 'sleeping')
+    this.prefetchFillers()
   }
 
   /** 마이크 열기 실패 — 원인별로 한 번만 안내하고, 듣기가 켜져 있는 동안 점점 간격을 늘려 다시 시도 */
@@ -393,6 +436,9 @@ export class VoiceEngine {
   /** 미리 만들어 둔 문장 소리 (앞 문장을 읽는 동안 다음 문장을 만든다) */
   private synthCache = new Map<string, Promise<ArrayBuffer | null>>()
   private speechToken = 0
+  /** 맞장구("네, 잠깐만요") 미리 만들어 둔 소리 — 지연 없이 바로 대답하려고 */
+  private fillerCache = new Map<string, Promise<ArrayBuffer | null>>()
+  private replyTimers: Array<ReturnType<typeof setTimeout>> = []
   /** 대화 중: 이 시각까지는 "자비스" 없이 말해도 알아듣는다 (주고받을 때마다 연장) */
   private convoUntil = 0
   /** 말이 끝난 뒤 이어서 들을 시간 (대답한 직후 호출어 없이 바로 대화) */
@@ -443,10 +489,12 @@ export class VoiceEngine {
     if (this.phase === 'loading') return
 
     const frameMs = (buf.length / SR) * 1000
-    if (!this.recording && performance.now() - this.speakEndedAt < 700) return
-    if (!this.recording) this.noise = VAD_TUNING.legacyNoise ? this.noise * 0.97 + rms * 0.03 : trackNoise(this.noise, rms, f.voiced)
+    // JARVIS 가 막 말을 마친 직후(메아리가 남는 시간)엔 버리지 않고 기록만 해 두고, 더 또렷한 소리만 말로 본다.
+    // 예전엔 0.7초를 통째로 버려서 바로 대답하면 말 앞부분이 잘렸다.
+    const echoTail = !this.recording && performance.now() - this.speakEndedAt < 700
+    if (!this.recording && !echoTail) this.noise = VAD_TUNING.legacyNoise ? this.noise * 0.97 + rms * 0.03 : trackNoise(this.noise, rms, f.voiced)
     // 블루투스 헤드셋처럼 입력이 작은 마이크도 잡히도록 낮은 하한 + 주변 소음 대비 배수 (목소리 떨림 판정이 함께 걸러 준다)
-    const threshold = Math.max(0.005, this.noise * VAD_TUNING.noiseRatio)
+    const threshold = Math.max(echoTail ? 0.02 : 0.005, this.noise * VAD_TUNING.noiseRatio * (echoTail ? 2 : 1))
     // 크기만이 아니라 "목소리"여야 한다 — 키보드 타건음·딸깍 소리는 주기성이 없어 걸러진다
     const voice = rms > threshold && f.voiced
 
@@ -492,7 +540,8 @@ export class VoiceEngine {
 
   private pushPreroll(buf: Float32Array): void {
     this.preroll.push(new Float32Array(buf))
-    if (this.preroll.length > 7) this.preroll.shift()
+    // 말 시작 전 0.64초를 함께 보관 (첫 자음·첫 음절이 잘리지 않게)
+    if (this.preroll.length > 10) this.preroll.shift()
   }
 
   private beginRecording(): void {
@@ -554,6 +603,7 @@ export class VoiceEngine {
       this.awakeUntil = 0
       this.earcon()
       this.cb.onCommand(cmd)
+      this.expectReply()
       if (this.phase !== 'speaking' && !this.recording) this.setPhase(this.conversation ? 'awake' : 'sleeping')
     }
     this.held = { audio, command, timer: setTimeout(fire, ms) }
@@ -614,6 +664,7 @@ export class VoiceEngine {
         this.touchConversation()
         this.earcon()
         this.cb.onCommand(cmd)
+        this.expectReply()
       }
       this.setPhase(this.inConversation ? 'awake' : 'sleeping')
       return
@@ -625,6 +676,7 @@ export class VoiceEngine {
         this.touchConversation()
         this.earcon()
         this.cb.onCommand(m.command)
+        this.expectReply()
         this.setPhase('awake')
       } else {
         this.awakeUntil = performance.now() + VAD_TUNING.wakeWindowMs
@@ -652,6 +704,7 @@ export class VoiceEngine {
   async speak(md: string): Promise<void> {
     const text = speakableText(md)
     if (!text) return
+    this.clearReplyTimers()
     this.queue = []
     return this.say(text, true)
   }
@@ -854,6 +907,7 @@ export class VoiceEngine {
   }
 
   stopSpeaking(): void {
+    this.clearReplyTimers()
     this.queue = []
     this.cancelSpeech()
   }
@@ -887,6 +941,7 @@ export class VoiceEngine {
   enqueue(text: string): void {
     const t = speakableText(text, 600)
     if (!t) return
+    this.clearReplyTimers()
     this.queue.push(t)
     if (!this.queueRunning) void this.drain()
   }

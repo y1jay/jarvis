@@ -19,6 +19,8 @@ const HF = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main'
 export const MODELS: Record<string, SttModel> = {
   'large-v3-turbo': { file: 'ggml-large-v3-turbo-q5_0.bin', url: `${HF}/ggml-large-v3-turbo-q5_0.bin`, bytes: 574_041_195, label: 'Large v3 Turbo (정확, 약 570MB)' },
   'large-v3': { file: 'ggml-large-v3-q5_0.bin', url: `${HF}/ggml-large-v3-q5_0.bin`, bytes: 1_081_140_203, label: 'Large v3 (가장 정확, 약 1.1GB, 조금 느림)' },
+  // 내 목소리 맞춤 모델 — 받는 게 아니라 이 컴퓨터에서 학습해 만든다 (없으면 기본 모델로)
+  personal: { file: 'ggml-personal.bin', url: '', bytes: 0, label: '내 목소리 맞춤' },
   small: { file: 'ggml-small-q5_1.bin', url: `${HF}/ggml-small-q5_1.bin`, bytes: 190_085_487, label: 'Small (가벼움, 약 190MB)' }
 }
 
@@ -137,6 +139,7 @@ export class NativeStt {
   private async ensureModel(m: SttModel): Promise<string> {
     const dest = join(this.opts.modelsDir, m.file)
     if (existsSync(dest) && statSync(dest).size > m.bytes * 0.95) return dest
+    if (!m.url) throw new Error(`${m.label} 모델 파일이 없습니다`)
     mkdirSync(this.opts.modelsDir, { recursive: true })
     const part = `${dest}.part`
     let lastErr = ''
@@ -184,7 +187,9 @@ export class NativeStt {
         return false
       }
       const key = this.opts.modelKey()
-      const m = MODELS[key] ?? MODELS[defaultModelKey()]
+      let m = MODELS[key] ?? MODELS[defaultModelKey()]
+      // 맞춤 모델 파일이 없으면 기본 모델로
+      if (!m.url && !existsSync(join(this.opts.modelsDir, m.file))) m = MODELS[defaultModelKey()]
       try {
         const model = await this.ensureModel(m)
         this.set({ state: 'starting', model: m.label })

@@ -12,6 +12,7 @@ import { collectBrain, mergeBrain, type BrainBundle } from './brain'
 import { DialogContext } from './dialog'
 import { CORRECT_BELOW_LOGPROB, SpeechCorrector } from './corrector'
 import { enginesFor, TtsHub, voiceById, VOICE_CATALOG } from './tts'
+import { cer, MIN_SAMPLES, usableSamples, VoiceTrainer } from './learn'
 import { ClaudeProvider } from './providers/claude'
 import { CodexProvider } from './providers/codex'
 import { GeminiProvider } from './providers/gemini'
@@ -23,14 +24,14 @@ import { createJarvisTools, JARVIS_TOOL_NAMES } from './jarvisTools'
 import { mentionedProjects, needsPlanning, Orchestrator } from './orchestrator'
 import { ApprovalLexicon, ConversationLog, extractMemoryPrompt, jobToRecord, MemoryStore, parseMemoryExtraction } from './memory'
 import { JarvisBrowser, resolveSiteDef, SiteStore } from './browser'
-import { isAuthError, isOtherRequest, isRepeatRequest, parsePanelIntent, parseSideIntent, timeAnswer, parseProviderIntent, parseVoiceLearnIntent, parseSiteLoginIntent, parseVoiceIntent, splitTargets } from './intents'
+import { isAuthError, isContinuation, isOtherRequest, isRepeatRequest, parsePanelIntent, parseSideIntent, timeAnswer, parseProviderIntent, parseVoiceLearnIntent, parseSiteLoginIntent, parseVoiceIntent, splitTargets } from './intents'
 import { Asker, resolveChoice, type QuestionKind } from './asker'
 import { DeviceHub, parseDeviceIntent, type Platform } from './devices'
 import { androidReleasePlaybook, parseReleaseIntent } from './release'
 import { DEFAULT_NAME, parseRenameIntent } from '../shared/wake'
 import { FastChat, isCodeWork, needsAgent } from './fastchat'
 import { isClamshell, KeepAwake, wakeDisplay } from './power'
-import { buildVocabPrompt, MODELS, NativeStt, sttBinaryPath } from './stt'
+import { buildVocabPrompt, defaultModelKey, MODELS, NativeStt, sttBinaryPath } from './stt'
 import { APP_ALIASES } from './system'
 import { classifyApprovalPrompt, parseClassification, ruleApproval, type ApprovalDecision } from '../shared/approval'
 import {
@@ -129,6 +130,7 @@ let vault: VoiceVault
 let speechLex: SpeechLexicon
 let corrector: SpeechCorrector
 let tts: TtsHub
+let trainer: VoiceTrainer
 /** 마지막으로 받아 적은 말과 엔진 확신도 — 실행 직전에 문맥 보정을 할지 정한다 */
 let lastHeard: { text: string; logprob: number; at: number } | null = null
 const browser = new JarvisBrowser({
@@ -685,8 +687,74 @@ async function restoreBrain(): Promise<string> {
   return `복원했습니다. ${parts.join('. ')}.`
 }
 
+let training = false
+/** 내 목소리 맞춤 학습: 모인 말소리 → 학습 → 비교 → 더 나을 때만 바꾸기 */
+async function trainVoice(): Promise<string> {
+  if (training) return '이미 학습 중이에요. 끝나면 알려 드릴게요.'
+  if (!vault.ready) return '먼저 "음성 학습 암호 정해줘"로 암호를 정해 주세요. 그때부터 말소리가 모이고, 모인 말소리로 학습합니다.'
+  const pass = await askUser('저장된 말소리를 열려면 음성 학습 암호가 필요해요. 입력해 주세요.', { kind: 'secret', from: 'JARVIS' })
+  if (!pass) return '학습을 취소했습니다.'
+  let all
+  try {
+    all = vault.readAll(pass)
+  } catch {
+    return '암호가 맞지 않아 학습하지 않았습니다.'
+  }
+  const items = usableSamples(all)
+  if (items.length < MIN_SAMPLES) return `학습에 쓸 수 있는 말소리가 ${items.length}개예요. 최소 ${MIN_SAMPLES}개가 필요하고, 200~300개면 확실히 좋아집니다. (모은 말소리 ${all.length}개 중 정답이 믿을 만한 것만 씁니다) 조금 더 대화한 뒤 다시 말씀해 주세요.`
+  if (!trainer.installed) {
+    const r = await requestApproval({ kind: 'tool', provider: 'jarvis', title: '내 목소리 학습 도구를 설치할까요? (약 1GB, 처음 한 번)', detail: '이 맥에서만 도는 학습 도구(PyTorch, Transformers)와 기본 모델(약 1.6GB)을 JARVIS 폴더에 받습니다. 학습 중 메모리는 약 5GB 이하로 제한합니다.' }, null)
+    if (!r.approved) return '설치하지 않아 학습하지 않았습니다.'
+  }
+  training = true
+  const t0 = Date.now()
+  try {
+    await trainer.install()
+    const { dataDir, train, evalItems } = trainer.prepare(items)
+    send('jarvis:speak', `말소리 ${train}개로 학습을 시작할게요. 끝나면 알려 드릴게요.`)
+    const model = await trainer.train(dataDir, 3)
+    // 비교: 학습에 안 쓴 말소리로 지금 모델 vs 새 모델
+    send('tts:state', { engine: 'learn', state: 'installing', message: '지금 모델과 새 모델을 비교하는 중' })
+    const pcms = await trainer.decode(evalItems.map((x) => x.audio))
+    const { mkdtempSync, symlinkSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const md = mkdtempSync(join(tmpdir(), 'jarvis-eval-'))
+    const cur = settings.get().voice.nativeModel
+    const curFile = MODELS[cur]?.file ?? MODELS[defaultModelKey()].file
+    symlinkSync(join(app.getPath('userData'), 'models', curFile), join(md, curFile))
+    symlinkSync(model, join(md, MODELS.personal.file))
+    const score = async (key: string): Promise<number> => {
+      const s2 = new NativeStt({ binary: sttBinaryPath(app.getAppPath(), process.resourcesPath, app.isPackaged), modelsDir: md, modelKey: () => key, onState: () => undefined })
+      if (!(await s2.start())) throw new Error('비교용 음성 엔진을 띄우지 못했습니다')
+      let err = 0
+      for (let i = 0; i < evalItems.length; i++) err += cer(evalItems[i].text, await s2.transcribe(pcms[i]))
+      s2.stop()
+      return 1 - err / evalItems.length
+    }
+    const before = await score(cur in MODELS ? cur : defaultModelKey())
+    const after = await score('personal')
+    const better = after > before + 0.01
+    if (better) {
+      trainer.adopt(model, join(app.getPath('userData'), 'models'))
+      send('settings:changed', settings.update({ voice: { nativeModel: 'personal' } }))
+      void stt.restart()
+    }
+    audit.record({ action: 'voice.train', provider: 'jarvis', detail: { samples: items.length, train, eval: evalItems.length, before: Math.round(before * 1000) / 10, after: Math.round(after * 1000) / 10, adopted: better, seconds: Math.round((Date.now() - t0) / 1000) } })
+    send('tts:state', { engine: 'learn', state: 'ready' })
+    return better
+      ? `학습을 마쳤어요. 학습에 안 쓴 말소리로 비교해 보니 알아듣기가 ${(before * 100).toFixed(1)}%에서 ${(after * 100).toFixed(1)}%로 좋아져서, 새 모델로 바꿨습니다.`
+      : `학습은 했지만 비교해 보니 ${(before * 100).toFixed(1)}% → ${(after * 100).toFixed(1)}%로 나아지지 않아서, 지금 모델을 그대로 씁니다. 말소리가 더 모이면 다시 해 볼게요.`
+  } catch (e) {
+    audit.record({ action: 'voice.train', provider: 'jarvis', detail: { samples: items.length, error: (e as Error).message.slice(0, 300) } })
+    send('tts:state', { engine: 'learn', state: 'error', message: `학습 실패: ${(e as Error).message.slice(0, 120)}` })
+    return `학습 중 문제가 생겼어요: ${(e as Error).message.slice(0, 200)}`
+  } finally {
+    training = false
+  }
+}
+
 /** 음성 학습 명령: 암호 정하기 / 상태 / 백업 / 지우기 */
-async function handleVoiceLearn(action: 'setup' | 'status' | 'backup' | 'clear' | 'restore'): Promise<string> {
+async function handleVoiceLearn(action: 'setup' | 'status' | 'backup' | 'clear' | 'restore' | 'train' | 'revert'): Promise<string> {
   const mb = (b: number): string => `${(b / 1024 / 1024).toFixed(1)}MB`
   if (action === 'status') {
     const st = vault.stats()
@@ -726,6 +794,15 @@ async function handleVoiceLearn(action: 'setup' | 'status' | 'backup' | 'clear' 
     return `음성 학습 샘플 ${n}개를 지웠습니다.`
   }
   if (action === 'restore') return restoreBrain()
+  if (action === 'train') return trainVoice()
+  if (action === 'revert') {
+    const before = settings.get().voice.nativeModel
+    if (before !== 'personal') return '지금은 기본 인식 모델을 쓰고 있어요.'
+    send('settings:changed', settings.update({ voice: { nativeModel: process.platform === 'darwin' ? 'large-v3' : 'small' } }))
+    audit.record({ action: 'settings.changed', provider: 'jarvis', detail: { keys: ['voice'], before: { nativeModel: before }, after: { nativeModel: settings.get().voice.nativeModel }, via: 'revert-personal' } })
+    void stt.restart()
+    return '기본 인식 모델로 되돌렸습니다. 학습한 모델은 지우지 않고 보관해 둘게요.'
+  }
   // backup
   if (!vault.ready) return '먼저 "음성 학습 암호 정해줘"로 암호를 정해 주세요. 백업은 그 암호로 잠긴 채 올라갑니다.'
   refreshBrain(true)
@@ -1010,8 +1087,7 @@ async function handleRequest(job: JobInfo): Promise<void> {
       /* 빠른 경로 실패 → 전체 에이전트로 */
     }
   }
-  // 음성 요청이 오래 걸리는 작업으로 가면 바로 짧게 알려 준다
-  if (job.via === 'voice') send('jarvis:speak', '네, 진행할게요.')
+  // (오래 걸릴 때 먼저 하는 대답은 음성 엔진이 알아서 — "네, 잠깐만요" → 5초 뒤 "확인하고 있어요")
 
   // 6) 세션별 작업 실행 → 한 답변
   const known = finder.list(settings.get().recentProjects)
@@ -1056,8 +1132,29 @@ function heardJustNow(text: string): boolean {
 }
 
 /** 문맥 보정 — 바뀌면 이력·학습 샘플에 남긴다 (내 목소리 학습용 정답으로 쓰임) */
+/** 들은 그대로가 JARVIS 가 아는 명령이면 바로잡지 않는다 ("음성학습 암호 정해줘" 가 "코드 수정해줘" 로 바뀐 일이 있었다) */
+function isKnownCommand(text: string): boolean {
+  const t = text.trim()
+  return !!(
+    parseVoiceLearnIntent(t) ||
+    parseVoiceIntent(t) ||
+    timeAnswer(t) ||
+    parsePanelIntent(t) !== null ||
+    parseSideIntent(t) !== null ||
+    parseDeviceIntent(t) ||
+    isRepeatRequest(t) ||
+    parseRenameIntent(t) ||
+    parseProviderIntent(t) ||
+    parseReleaseIntent(t) ||
+    parseSiteLoginIntent(t) ||
+    parseQuitIntent(t) ||
+    parseOpenIntent(t)
+  )
+}
+
 async function correctHeard(raw: string, q: { question?: string; options?: string[] }): Promise<string> {
   if (!settings.get().voice.contextCorrection || !(await authStatus('claude')).loggedIn) return raw
+  if (!q.options?.length && isKnownCommand(raw)) return raw
   const t0 = Date.now()
   const recent = [talk.recentText(3, settings.get().assistantName), q.question ? `${settings.get().assistantName}: ${q.question}` : ''].filter(Boolean).join('\n')
   const fixed = await corrector.correct(raw, { recent, options: q.options, words: [...speechLex.topWords(25), ...settings.get().recentProjects.map((d) => d.split(/[\\/]/).pop() ?? '')], name: settings.get().assistantName })
@@ -1068,10 +1165,24 @@ async function correctHeard(raw: string, q: { question?: string; options?: strin
   return fixed
 }
 
+/** 방금 말로 시작한 작업 (이어지는 말이 오면 합치려고) */
+let lastVoiceJob: { job: JobInfo; at: number } | null = null
+
 /** 요청 하나를 작업(Job)으로 시작 — 화면/음성 입력, 그리고 질문 도중 다른 요청을 하신 경우 */
 function startJob(prompt: string, via: 'voice' | 'text' = 'text'): { jobId: string } {
+  // 말을 잠깐 쉬었다가 이어서 한 경우: 아직 처리 중인 앞 요청을 멈추고 둘을 합쳐서 다시
+  const prev = lastVoiceJob
+  if (via === 'voice' && prev && Date.now() - prev.at < 15_000 && ['planning', 'running'].includes(prev.job.status) && isContinuation(prompt)) {
+    const merged = `${prev.job.prompt} ${prompt}`.replace(/\s+/g, ' ').trim()
+    audit.record({ action: 'agent.interrupt', provider: settings.get().provider, detail: { via: 'continuation', before: prev.job.prompt, added: prompt } })
+    void orch.interruptAll()
+    prev.job.notes.push('이어서 하신 말과 합쳐서 다시 처리합니다')
+    finishJob(prev.job, '', 'done')
+    prompt = merged
+  }
   const s = settings.get()
   const job: JobInfo = { id: randomUUID(), prompt, status: 'planning', tasks: [], notes: [], via, createdAt: Date.now() }
+  if (via === 'voice') lastVoiceJob = { job, at: Date.now() }
   audit.record({ action: 'agent.prompt', provider: s.provider, project: s.projectDir, detail: { prompt: prompt.slice(0, 2000), jobId: job.id, via } })
   // 응답(jobId)이 renderer 에 먼저 도착하도록 다음 틱에 시작
   setTimeout(async () => {
@@ -1294,7 +1405,7 @@ function registerIpc(): void {
     if (!settings.get().voice.learning || !vault.ready) return
     // 인증번호·비밀번호를 묻는 중엔 말소리를 절대 저장하지 않는다
     if (asker.list().some((q) => q.kind === 'secret' || q.kind === 'code')) return
-    holdSample({ ts: Date.now(), heard: x.heard, packets: x.packets.map((b) => new Uint8Array(b)), sampleRate: x.sampleRate, device: x.device })
+    holdSample({ ts: Date.now(), heard: x.heard, logprob: lastHeard && lastHeard.text === x.heard ? lastHeard.logprob : undefined, packets: x.packets.map((b) => new Uint8Array(b)), sampleRate: x.sampleRate, device: x.device })
   })
   h('voice:report', (list: Array<{ name: string; lang: string }>) => {
     // 예전 버그로 목소리 이름 자리에 엉뚱한 말이 저장돼 있으면 기본 목소리로 되돌린다
@@ -1487,6 +1598,7 @@ app.whenReady().then(() => {
   // 이전에 열려 있던 프로젝트로 첫 세션 준비
   const s0 = settings.get()
   orch.sessionFor(s0.provider, s0.projectDir, true)
+  trainer = new VoiceTrainer(join(ud, 'learn'), app.isPackaged ? join(process.resourcesPath, 'learn') : join(app.getAppPath(), 'resources', 'learn'), (p) => send('tts:state', { engine: 'learn', state: p.stage === 'done' ? 'ready' : p.stage === 'error' ? 'error' : 'installing', message: p.message }))
   tts = new TtsHub(ud, app.isPackaged ? join(process.resourcesPath, 'tts') : join(app.getAppPath(), 'resources', 'tts'), (st) => send('tts:state', st))
   corrector = new SpeechCorrector({ env: () => auth.envFor('claude'), model: () => settings.get().fastModel || 'sonnet', cwd: () => workspaceDir() })
   fastChat = new FastChat({

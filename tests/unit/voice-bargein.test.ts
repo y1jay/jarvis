@@ -130,7 +130,7 @@ describe('VoiceEngine 상태 흐름', () => {
     const heard: number[] = []
     const bargeIns: number[] = []
     const e = new VoiceEngine(
-      { model: 'x', language: 'korean', wakeWords: ['자비스'], wakeWordEnabled: true, ttsVoice: null, ttsRate: 1, bargeIn: opts.bargeIn },
+      { model: 'x', language: 'korean', wakeWords: ['자비스'], wakeWordEnabled: true, ttsVoice: null, ttsRate: 1, bargeIn: opts.bargeIn, fillers: false },
       {
         onPhase: (p) => phases.push(p),
         onLevel: () => undefined,

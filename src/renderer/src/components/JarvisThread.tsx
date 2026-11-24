@@ -43,12 +43,12 @@ export function JarvisThread({ jobs, onSend, onStop, onOpenSession }: { jobs: Jo
         )}
         {jobs.map((j) => (
           <div key={j.id} className="job" data-testid="jarvis-job" data-status={j.status}>
-            <div className="msg msg-user">
-              <div className="msg-text">
-                {j.via === 'voice' && <span className="via">🎙 </span>}
-                {j.prompt}
+            {/* 음성으로 한 말은 글자로 남기지 않는다 (키보드로 입력한 것만 표시) */}
+            {j.via !== 'voice' && (
+              <div className="msg msg-user">
+                <div className="msg-text">{j.prompt}</div>
               </div>
-            </div>
+            )}
             <div className="msg msg-ai">
               <div className="msg-meta">
                 <span className="msg-who">JARVIS</span>

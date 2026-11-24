@@ -30,6 +30,8 @@ export interface VoiceSample {
   final?: string
   corrected?: boolean
   device?: string
+  /** 엔진 확신도 (0 에 가까울수록 확신) — 학습 때 믿을 만한 정답만 고르는 데 쓴다 */
+  logprob?: number
   /** Opus 패킷들 (16kHz mono) */
   packets: Uint8Array[]
   sampleRate: number

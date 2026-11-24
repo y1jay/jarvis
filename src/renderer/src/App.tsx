@@ -54,7 +54,6 @@ export function App(): ReactNode {
   const [tab, setTab] = useState<Tab>('chat')
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
   const [phase, setPhase] = useState<VoicePhase>('off')
-  const [transcript, setTranscript] = useState('')
   const [toast, setToast] = useState<{ m: string; err?: boolean } | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [cameraOn, setCameraOn] = useState(false)
@@ -306,7 +305,7 @@ export function App(): ReactNode {
       return
     }
     voice.current ??= new VoiceEngine(
-      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId, bargeIn: s.voice.bargeIn, neural: s.voice.ttsVoiceId !== 'system' },
+      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId, bargeIn: s.voice.bargeIn, neural: s.voice.ttsVoiceId !== 'system', voiceKey: s.voice.ttsVoiceId },
       {
         onPhase: (p) => {
           setPhase(p)
@@ -318,7 +317,7 @@ export function App(): ReactNode {
           holo.current?.setLevel(v)
           setMicLevel((p) => (Math.abs(p - v) > 0.03 ? v : p))
         },
-        onTranscript: (t) => setTranscript(t),
+        onTranscript: () => {}, // 내 말은 화면에 글자로 띄우지 않는다
         onCommand: (t) => {
           void window.jarvis.win.summon()
           // "멈춰/그만" — 하던 작업을 모두 멈추고 다음 말을 기다린다
@@ -332,10 +331,9 @@ export function App(): ReactNode {
           }
           void sendRef.current(t, 'voice')
         },
-        onBargeIn: () => setTranscript(''),
+        onBargeIn: () => {},
         onWake: () => {
           void window.jarvis.win.summon()
-          setTranscript('')
           void voice.current?.speak('네?')
         },
         onProgress: (m) => setVoiceProgress(m),
@@ -359,7 +357,7 @@ export function App(): ReactNode {
       void voice.current.start()
     }
     lastMic.current = mic
-    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch, bargeIn: settings.voice.bargeIn, neural: settings.voice.ttsVoiceId !== 'system' })
+    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch, bargeIn: settings.voice.bargeIn, neural: settings.voice.ttsVoiceId !== 'system', voiceKey: settings.voice.ttsVoiceId })
   }, [settings])
 
   // ── 카메라 + 손 추적 ──
@@ -572,7 +570,6 @@ export function App(): ReactNode {
           </div>
           <div className="holo-label" data-testid="holo-label">
             <div className="holo-phase">{holoLabel}</div>
-            {transcript && <div className="holo-transcript">“{transcript}”</div>}
             {voiceProgress && phase !== 'off' && <div className="holo-progress">{voiceProgress}</div>}
             {phase !== 'off' && phase !== 'speaking' && (
               <div className="mic-meter" title="마이크 입력 크기" data-testid="mic-meter">

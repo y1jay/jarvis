@@ -21,6 +21,9 @@ extraResources:
   # 사람 같은 목소리: Qwen3 목소리 서버 + 설계한 목소리(비서·집사) 기준 음성
   - from: resources/tts
     to: tts
+  # 내 목소리 맞춤 학습 스크립트 (학습 도구는 처음 쓸 때 설치)
+  - from: resources/learn
+    to: learn
 # 공식 CLI / Agent SDK 는 네이티브 바이너리를 실행하므로 asar 밖으로 풀어 둔다
 asarUnpack:
   - node_modules/@anthropic-ai/**

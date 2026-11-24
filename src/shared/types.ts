@@ -206,6 +206,7 @@ export type AuditAction =
   | 'voice.lexicon.fix'
   | 'voice.correct'
   | 'tts.install'
+  | 'voice.train'
   | 'system.app.quit'
   | 'system.url.open'
   | 'system.path.open'

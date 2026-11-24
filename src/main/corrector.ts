@@ -6,8 +6,8 @@ import { claudeBinary } from './cli'
 import { Queue } from './fastchat'
 import { editDistance, soundKey } from '../renderer/src/voice/text'
 
-/** 이보다 확신이 낮으면(더 음수면) 문맥 보정을 한다 — 실측: 맞게 받아 적은 문장 -0.00~-0.14, 틀린 문장 -0.14~-0.24 */
-export const CORRECT_BELOW_LOGPROB = -0.12
+/** 이보다 확신이 낮으면(더 음수면) 문맥 보정을 한다 — 실측: 맞게 받아 적은 문장 -0.00~-0.14, 틀린 문장 -0.14~-0.24. 맞는 말을 바꾸는 쪽이 더 해로워서 보수적으로 */
+export const CORRECT_BELOW_LOGPROB = -0.16
 
 export interface CorrectionContext {
   /** 최근 대화 ("사용자: …\nJARVIS: …") */

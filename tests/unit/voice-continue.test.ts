@@ -229,3 +229,77 @@ describe('대화 모드 — 주고받는 동안은 "자비스" 없이', () => {
     expect(t.commands).toEqual([])
   })
 })
+
+describe('말 앞부분이 잘리지 않게', () => {
+  beforeEach(() => {
+    vi.stubGlobal('speechSynthesis', { cancel: () => undefined, getVoices: () => [], speak: () => undefined })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+  it('[실제 재현] JARVIS 가 말을 마치자마자 대답해도 첫마디부터 다 담긴다', async () => {
+    const speech = loadSpeech()
+    const heard: number[] = []
+    const e = new VoiceEngine(
+      { model: 'x', language: 'korean', wakeWords: ['자비스'], wakeWordEnabled: true, ttsVoice: null, ttsRate: 1 },
+      { onPhase: () => undefined, onLevel: () => undefined, onTranscript: () => undefined, onCommand: () => undefined, onWake: () => undefined, onProgress: () => undefined, onError: () => undefined }
+    )
+    const p = e as unknown as Record<string, unknown>
+    p.stream = {}
+    p.ready = true
+    p.conversation = true
+    p.earcon = () => undefined
+    p.transcribe = async (a: Float32Array) => {
+      heard.push(a.length)
+      return '다운로드 폴더 열어줘'
+    }
+    ;(p.setPhase as (x: string) => void).call(e, 'awake')
+    p.speakEndedAt = performance.now() // 방금 말을 마침
+    const audio = cat(speech, quiet(1.5))
+    for (let i = 0; i + FRAME <= audio.length; i += FRAME) (p.onAudio as (b: Float32Array) => void).call(e, audio.slice(i, i + FRAME))
+    await new Promise((r) => setTimeout(r, 10))
+    expect(heard).toHaveLength(1)
+    // 담긴 소리가 실제 말 길이 이상 (예전엔 앞 0.7초가 통째로 빠졌다)
+    expect(heard[0]).toBeGreaterThanOrEqual(speech.length - FRAME)
+  })
+})
+
+describe('대답은 무조건 먼저', () => {
+  let spoken: string[] = []
+  beforeEach(() => {
+    spoken = []
+    vi.stubGlobal('speechSynthesis', { cancel: () => undefined, getVoices: () => [], speak: (u: { text: string; onend?: () => void }) => { spoken.push(u.text); setTimeout(() => u.onend?.(), 300) } })
+    vi.stubGlobal('SpeechSynthesisUtterance', class { constructor(public text: string) {} })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+  function make() {
+    const e = new VoiceEngine(
+      { model: 'x', language: 'korean', wakeWords: ['자비스'], wakeWordEnabled: true, ttsVoice: null, ttsRate: 1 },
+      { onPhase: () => undefined, onLevel: () => undefined, onTranscript: () => undefined, onCommand: () => undefined, onWake: () => undefined, onProgress: () => undefined, onError: () => undefined }
+    )
+    const p = e as unknown as Record<string, unknown>
+    p.stream = {}
+    p.ready = true
+    p.speakEndedAt = -1e9
+    return e
+  }
+  it('대답이 늦으면 0.6초 안에 "네, 잠깐만요", 5초 넘으면 "확인하고 있어요"', async () => {
+    vi.useFakeTimers()
+    const e = make()
+    e.expectReply()
+    await vi.advanceTimersByTimeAsync(700)
+    expect(spoken).toEqual(['네, 잠깐만요.'])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(spoken).toEqual(['네, 잠깐만요.', '확인하고 있어요. 조금만 기다려 주세요.'])
+  })
+  it('대답이 바로 오면 맞장구 없이 대답만', async () => {
+    vi.useFakeTimers()
+    const e = make()
+    e.expectReply()
+    await vi.advanceTimersByTimeAsync(300)
+    void e.speak('지금은 오후 5시예요.')
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(spoken).toEqual(['지금은 오후 5시예요.'])
+  })
+})
