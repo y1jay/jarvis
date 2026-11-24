@@ -63,6 +63,29 @@ export function App(): ReactNode {
   const [micLevel, setMicLevel] = useState(0)
   const [platform, setPlatform] = useState('')
   const [questions, setQuestions] = useState<Q[]>([])
+  // 대화창 열기/닫기 (화면 설정이라 이 기기에만 기억)
+  const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('jarvis.panelOpen') !== '0')
+  useEffect(() => localStorage.setItem('jarvis.panelOpen', panelOpen ? '1' : '0'), [panelOpen])
+  useEffect(() => window.jarvis.app.onPanel((open) => setPanelOpen(open)), [])
+  // 왼쪽 AI 연결·프로젝트 창 열기/닫기
+  const [sideOpen, setSideOpen] = useState(() => localStorage.getItem('jarvis.sideOpen') !== '0')
+  useEffect(() => localStorage.setItem('jarvis.sideOpen', sideOpen ? '1' : '0'), [sideOpen])
+  useEffect(() => window.jarvis.app.onSide((open) => setSideOpen(open)), [])
+  useEffect(() => window.jarvis.app.onTab((t) => setTab(t as Tab)), [])
+  // 목소리 엔진 설치·준비 상태 알림
+  useEffect(
+    () =>
+      window.jarvis.tts.onState((st) => {
+        if (st.state === 'installing' && st.message) setVoiceProgress(st.message)
+        else if (st.state === 'ready') setVoiceProgress('')
+        else if (st.state === 'error' && st.message) notify(st.message, true)
+      }),
+    []
+  )
+  // 닫혀 있을 때 JARVIS 가 뭔가 물으면 놓치지 않게 연다
+  useEffect(() => {
+    if (questions.length) setPanelOpen(true)
+  }, [questions.length])
   // 홀로그램은 항상 기본 화면. 웹/기기는 그 위에 뜨는 팝업
   const [popups, setPopups] = useState<Record<PopupKind, boolean>>({ browser: false, device: false })
   const [rects, setRects] = useState<Record<PopupKind, Rect>>(() => ({ browser: loadRect('browser'), device: loadRect('device') }))
@@ -132,7 +155,7 @@ export function App(): ReactNode {
       if (clamshell === last) return
       last = clamshell
       voice.current?.updateOptions({ clamshell })
-      if (voice.current?.listening) voice.current.scheduleRestart('devicechange', 300)
+      if (voice.current?.enabled) voice.current.scheduleRestart('devicechange', 300)
     }
     void check()
     const t = setInterval(() => void check(), 20_000)
@@ -170,7 +193,7 @@ export function App(): ReactNode {
     void v.speak(text).then(() => {
       if (holo.current?.getState() === 'speaking') holo.current?.setState('idle')
       // 대답한 뒤 몇 초간은 호출어 없이 이어서 말할 수 있게
-      if (followUp) v.keepAwake(8000)
+      if (followUp) v.keepAwake(20000)
     })
   }, [])
 
@@ -214,7 +237,7 @@ export function App(): ReactNode {
           if (rest) v.enqueue(rest)
           void v.whenIdle().then(() => {
             if (holo.current?.getState() === 'speaking') holo.current?.setState('idle')
-            if (j.via === 'voice') v.keepAwake(8000)
+            if (j.via === 'voice') v.keepAwake(20000)
           })
         } else if (j.answer && (j.via === 'voice' || phaseRef.current !== 'off')) speak(j.answer, j.via === 'voice')
       }),
@@ -283,7 +306,7 @@ export function App(): ReactNode {
       return
     }
     voice.current ??= new VoiceEngine(
-      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId, bargeIn: s.voice.bargeIn },
+      { model: s.voice.sttModel, language: s.voice.language, wakeWords: effectiveWakeWords(s.assistantName, s.voice.wakeWords), wakeWordEnabled: s.voice.wakeWordEnabled, ttsVoice: s.voice.ttsVoice, ttsRate: s.voice.ttsRate, ttsPitch: s.voice.ttsPitch, inputDeviceId: s.voice.inputDeviceId, bargeIn: s.voice.bargeIn, neural: s.voice.ttsVoiceId !== 'system' },
       {
         onPhase: (p) => {
           setPhase(p)
@@ -313,7 +336,7 @@ export function App(): ReactNode {
         onWake: () => {
           void window.jarvis.win.summon()
           setTranscript('')
-          void voice.current?.speak('네, 말씀하세요.')
+          void voice.current?.speak('네?')
         },
         onProgress: (m) => setVoiceProgress(m),
         onError: (m) => {
@@ -330,13 +353,13 @@ export function App(): ReactNode {
     if (!settings || !voice.current) return
     // 마이크 장치를 바꾸면 바로 다시 연결
     const mic = settings.voice.inputDeviceId
-    if (lastMic.current !== undefined && lastMic.current !== mic && voice.current.listening) {
+    if (lastMic.current !== undefined && lastMic.current !== mic && voice.current.enabled) {
       voice.current.updateOptions({ inputDeviceId: mic })
       voice.current.stop()
       void voice.current.start()
     }
     lastMic.current = mic
-    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch, bargeIn: settings.voice.bargeIn })
+    voice.current.updateOptions({ wakeWords: effectiveWakeWords(settings.assistantName, settings.voice.wakeWords), wakeWordEnabled: settings.voice.wakeWordEnabled, ttsVoice: settings.voice.ttsVoice, ttsRate: settings.voice.ttsRate, ttsPitch: settings.voice.ttsPitch, bargeIn: settings.voice.bargeIn, neural: settings.voice.ttsVoiceId !== 'system' })
   }, [settings])
 
   // ── 카메라 + 손 추적 ──
@@ -461,6 +484,9 @@ export function App(): ReactNode {
   return (
     <div className={`app plat-${platform}`}>
       <div className="titlebar">
+        <button className="side-toggle" data-testid="toggle-side" onClick={() => setSideOpen((v) => !v)} title={sideOpen ? 'AI 연결 창 닫기' : 'AI 연결 창 열기'}>
+          {sideOpen ? '⟨' : '☰'}
+        </button>
         <div className="brand">
           <span className="brand-mark">◉</span> J.A.R.V.I.S.
         </div>
@@ -476,8 +502,8 @@ export function App(): ReactNode {
         )}
       </div>
 
-      <div className="body">
-        <aside className="side">
+      <div className={`body ${panelOpen ? '' : 'panel-closed'} ${sideOpen ? '' : 'side-closed'}`}>
+        <aside className="side" hidden={!sideOpen}>
           <ProviderPanel settings={settings} onSettings={setSettings} notify={notify} />
           <div className="side-title">프로젝트</div>
           <div className="project">
@@ -570,6 +596,9 @@ export function App(): ReactNode {
             <button className={`orb ${popups.device ? 'orb-on' : ''}`} data-testid="open-device" onClick={() => openPopup('device')} title="테스트 기기 (아이폰 시뮬레이터 / 안드로이드)">
               📱
             </button>
+            <button className={`orb ${panelOpen ? 'orb-on' : ''}`} data-testid="toggle-panel" onClick={() => setPanelOpen((v) => !v)} title={panelOpen ? '대화창 닫기' : '대화창 열기'}>
+              💬
+            </button>
           </div>
           {cameraOn && (
             <div className="gesture-help">
@@ -578,8 +607,11 @@ export function App(): ReactNode {
           )}
         </main>
 
-        <section className="panel">
+        <section className="panel" hidden={!panelOpen}>
           <div className="tabs">
+            <button className="tab panel-close" data-testid="close-panel" onClick={() => setPanelOpen(false)} title="대화창 닫기">
+              ›
+            </button>
             {(
               [
                 ['chat', '대화'],

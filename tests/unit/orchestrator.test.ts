@@ -171,3 +171,26 @@ describe('생성된 지시문은 프로젝트 고정', () => {
     expect(FakeProvider.log.map((l) => l.cwd)).toEqual(['/w/moneytree-backend'])
   })
 })
+
+describe('일상 행동은 일반 세션에서, 프로젝트 포커스는 유지', () => {
+  it('focus:false 로 일반 세션 실행 → 보고 있던 프로젝트 세션이 계속 포커스', async () => {
+    const { o, newJob } = make(async () => '')
+    await o.runJob(newJob('a'), 'xcroll-be 테스트 돌려줘', 'claude', KNOWN)
+    const projectFocus = o.focusedId()
+    expect(o.get(projectFocus!)?.projectDir).toBe('/w/xcroll-be')
+    await o.runJob(newJob('b'), '다운로드 폴더 열어줘', 'claude', KNOWN, { project: null, focus: false })
+    expect(FakeProvider.log.map((l) => l.cwd)).toEqual(['/w/xcroll-be', '/tmp/ws'])
+    expect(o.focusedId()).toBe(projectFocus)
+    // 같은 일반 세션을 재사용
+    await o.runJob(newJob('c'), '디스크 용량 알려줘', 'claude', KNOWN, { project: null, focus: false })
+    expect(o.list().filter((s) => s.projectDir === null)).toHaveLength(1)
+  })
+  it('prewarmFor 는 포커스를 바꾸지 않고 일반 세션을 만든다', async () => {
+    const { o, newJob } = make(async () => '')
+    await o.runJob(newJob('a'), 'xcroll-app 빌드해', 'claude', KNOWN)
+    const f = o.focusedId()
+    o.prewarmFor('claude', null)
+    expect(o.focusedId()).toBe(f)
+    expect(o.list().some((s) => s.projectDir === null)).toBe(true)
+  })
+})

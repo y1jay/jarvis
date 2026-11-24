@@ -12,6 +12,16 @@ export function needsAgent(text: string): boolean {
   return ACTION.test(text)
 }
 
+/**
+ * 프로젝트(코드) 작업으로 보이는 요청 — 사용자가 보고 있는 프로젝트 세션(기본 모델)에서 처리.
+ * 그 외 일상 행동(앱·폴더·웹·메시지·시스템 정보 등)은 빠른 모델의 일반 세션에서 처리한다.
+ */
+const CODE_WORK = /(프로젝트|코드|소스|함수|클래스|컴포넌트|모듈|변수|타입|버그|에러|오류|예외|테스트|빌드|컴파일|린트|배포|출시|릴리[즈스]|커밋|푸시|브랜치|머지|병합|리베이스|깃|git|PR|풀\s*리퀘|레포|저장소|리팩|구현|기능|API|엔드포인트|스키마|마이그레이션|DB|디비|쿼리|서버|백엔드|프론트|화면\s*(을|를)?\s*(고쳐|수정|만들)|고쳐|수정해|추가해|개발|디버그|로그\s*(봐|확인)|README|CLAUDE\.md|package\.json|\.(ts|tsx|js|jsx|py|go|rs|java|kt|swift|md|json|ya?ml|sql|css|html)\b)/i
+
+export function isCodeWork(text: string): boolean {
+  return CODE_WORK.test(text)
+}
+
 const SYSTEM = (name: string, extra: string): string =>
   [
     `너는 ${name}, 사용자의 데스크톱 음성 비서다. 사용자는 말로 묻고 너는 소리 내어 답한다.`,
@@ -23,7 +33,7 @@ const SYSTEM = (name: string, extra: string): string =>
     .filter(Boolean)
     .join('\n')
 
-class Queue implements AsyncIterable<SDKUserMessage> {
+export class Queue implements AsyncIterable<SDKUserMessage> {
   private items: SDKUserMessage[] = []
   private wake: ((r: IteratorResult<SDKUserMessage>) => void) | null = null
   push(m: SDKUserMessage): void {
@@ -43,12 +53,14 @@ export class FastChat {
   private it: AsyncIterator<unknown> | null = null
   private input: Queue | null = null
   private key = ''
+  private knownMemory = ''
   private chain: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly opts: { env: () => NodeJS.ProcessEnv; name: () => string; memory: () => string; model: () => string; cwd: () => string }) {}
 
   private ensure(): void {
-    const key = JSON.stringify([this.opts.name(), this.opts.memory(), this.opts.model(), this.opts.env().ANTHROPIC_API_KEY ? 'k' : 'l'])
+    // 기억은 키에서 뺀다 — 바뀔 때마다 다시 띄우면 첫 대답이 1~2초 늦어진다. 바뀐 기억은 메시지에 붙여 보낸다
+    const key = JSON.stringify([this.opts.name(), this.opts.model(), this.opts.env().ANTHROPIC_API_KEY ? 'k' : 'l'])
     if (this.q && this.key === key) return
     this.close()
     this.input = new Queue()
@@ -68,6 +80,7 @@ export class FastChat {
     })
     this.it = this.q[Symbol.asyncIterator]()
     this.key = key
+    this.knownMemory = this.opts.memory()
   }
 
   /** 앱 시작 시 미리 프로세스를 띄워 첫 대답 지연을 줄인다 */
@@ -97,7 +110,10 @@ export class FastChat {
   ask(text: string, onDelta: (t: string) => void): Promise<string | null> {
     const run = async (): Promise<string | null> => {
       this.ensure()
-      this.input!.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null } as SDKUserMessage)
+      const mem = this.opts.memory()
+      const content = mem && mem !== this.knownMemory ? `[기억 갱신 — 이전 기억 대신 이것을 따른다]\n${mem}\n\n[사용자 말]\n${text}` : text
+      this.knownMemory = mem
+      this.input!.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null } as SDKUserMessage)
       let buf = ''
       let decided: 'agent' | 'chat' | null = null
       for (;;) {

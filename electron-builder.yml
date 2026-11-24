@@ -18,11 +18,16 @@ extraResources:
   # 네이티브 음성 인식 엔진 (scripts/build-whisper.mjs 로 플랫폼별 빌드)
   - from: resources/bin
     to: bin
+  # 사람 같은 목소리: Qwen3 목소리 서버 + 설계한 목소리(비서·집사) 기준 음성
+  - from: resources/tts
+    to: tts
 # 공식 CLI / Agent SDK 는 네이티브 바이너리를 실행하므로 asar 밖으로 풀어 둔다
 asarUnpack:
   - node_modules/@anthropic-ai/**
   - node_modules/@openai/**
   - node_modules/@google/gemini-cli/**
+  # 목소리 엔진(Supertonic) 네이티브 모듈
+  - node_modules/sherpa-onnx-*/**
 mac:
   category: public.app-category.productivity
   # Apple Silicon. (Intel 맥용은 x64 네이티브 바이너리가 따로 필요)
@@ -30,6 +35,11 @@ mac:
     - target: dmg
       arch: [arm64]
   hardenedRuntime: true
+  # 마이크·카메라·AppleScript 권한 (없으면 정식 서명된 빌드에서 마이크가 막힘)
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # 인증서를 지문으로 지정해 서명 (같은 이름 인증서가 여러 개여도 실패하지 않게)
+  sign: scripts/sign-mac.cjs
   extendInfo:
     NSCameraUsageDescription: JARVIS 는 손 제스처 인식과 홀로그램 표시를 위해 카메라를 사용합니다.
     NSMicrophoneUsageDescription: JARVIS 는 "헤이 자비스" 음성 호출을 듣기 위해 마이크를 사용합니다.

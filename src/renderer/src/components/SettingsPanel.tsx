@@ -110,8 +110,9 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
           </select>
         </label>
         <div className="muted small">블루투스 헤드셋 마이크는 소리가 작게 들어올 수 있습니다. 잘 안 들리면 맥북 내장 마이크를 골라 보세요. 바꾸면 마이크를 껐다 켜야 적용됩니다.</div>
+        <VoicePicker current={settings.voice.ttsVoiceId} />
         <label className="set-row">
-          <span>목소리</span>
+          <span>운영체제 목소리</span>
           <select value={settings.voice.ttsVoice ?? ''} onChange={(e) => void up({ voice: { ttsVoice: e.target.value || null } })}>
             <option value="">자동 (한국어)</option>
             {list.map((v) => (
@@ -150,6 +151,92 @@ export function SettingsPanel({ settings, onSettings }: { settings: JarvisSettin
         </label>
         <div className="muted small">전역 단축키: ⌘/Ctrl + Shift + J — 자비스 호출</div>
       </div>
+    </div>
+  )
+}
+
+type VoiceItem = { id: string; engine: string; label: string; desc: string; installed: boolean; favorite: boolean }
+const ENGINE_TITLE: Record<string, string> = { qwen3: 'Qwen3 — 가장 사람 같음 (내 맥에서, 처음 약 3GB 설치)', supertonic: 'Supertonic — 아주 빠름 (내 컴퓨터에서, 145MB)', system: '기본' }
+
+/** 사람 같은 목소리 고르기: ▶ 미리듣기 · 사용 · ★ 자주 쓰는 목소리 */
+function VoicePicker({ current }: { current: string }): ReactNode {
+  const [list, setList] = useState<VoiceItem[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState('')
+  const reload = (): void => void window.jarvis.tts.voices().then(setList)
+  useEffect(reload, [current])
+  const play = async (v: VoiceItem): Promise<void> => {
+    if (v.engine === 'system') return
+    if (!v.installed && v.engine === 'qwen3') {
+      setMsg('Qwen3 목소리는 "사용"을 눌러 엔진을 설치한 뒤 들을 수 있어요.')
+      return
+    }
+    setBusy(v.id)
+    setMsg(v.installed ? '' : '목소리 모델을 받는 중…')
+    try {
+      const buf = await window.jarvis.tts.preview(v.id)
+      if (buf) {
+        const ctx = new AudioContext()
+        const src = ctx.createBufferSource()
+        src.buffer = await ctx.decodeAudioData(buf)
+        src.connect(ctx.destination)
+        src.onended = () => void ctx.close()
+        src.start()
+      }
+      setMsg('')
+      reload()
+    } catch (e) {
+      setMsg(`미리듣기 실패: ${(e as Error).message}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+  const use = async (v: VoiceItem): Promise<void> => {
+    setBusy(v.id)
+    setMsg(v.installed ? '' : '설치 중… (Qwen3 는 몇 분 걸릴 수 있어요)')
+    try {
+      setMsg(await window.jarvis.tts.use(v.id))
+      reload()
+    } finally {
+      setBusy(null)
+    }
+  }
+  const fav = async (v: VoiceItem): Promise<void> => {
+    await window.jarvis.tts.favorite(v.id, !v.favorite)
+    reload()
+  }
+  const groups = ['qwen3', 'supertonic', 'system'].map((e) => [e, list.filter((v) => v.engine === e)] as const).filter(([, l]) => l.length)
+  return (
+    <div className="voice-picker" data-testid="voice-picker">
+      <div className="set-row">
+        <span>말하는 목소리</span>
+        <b>{list.find((v) => v.id === current)?.label ?? '기본 목소리'}</b>
+      </div>
+      {groups.map(([engine, items]) => (
+        <div key={engine} className="vp-group">
+          <div className="muted small">{ENGINE_TITLE[engine]}</div>
+          {items.map((v) => (
+            <div key={v.id} className={`vp-row ${v.id === current ? 'vp-on' : ''}`}>
+              <button className="vp-fav" title="자주 쓰는 목소리 (말로 바꿀 때 먼저 보여 줌)" onClick={() => void fav(v)}>
+                {v.favorite ? '★' : '☆'}
+              </button>
+              <div className="vp-name">
+                {v.label}
+                <span className="muted small"> {v.desc}</span>
+              </div>
+              {v.engine !== 'system' && (
+                <button disabled={busy !== null} onClick={() => void play(v)}>
+                  {busy === v.id ? '…' : '▶'}
+                </button>
+              )}
+              <button disabled={busy !== null || v.id === current} onClick={() => void use(v)}>
+                {v.id === current ? '사용 중' : '사용'}
+              </button>
+            </div>
+          ))}
+        </div>
+      ))}
+      {msg && <div className="muted small">{msg}</div>}
     </div>
   )
 }

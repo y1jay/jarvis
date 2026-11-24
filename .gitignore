@@ -8,3 +8,5 @@ tests/e2e/artifacts/
 src/renderer/public/ort/
 .cache/
 resources/bin/
+# 이 맥에서 서명에 쓸 인증서 지문 (개인 정보라 올리지 않음)
+.signing-identity

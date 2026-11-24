@@ -86,3 +86,14 @@ describe('빠른 대화 경로 (실제 Claude)', () => {
     fc.close()
   }, 180_000)
 })
+
+describe('빠른 대화가 다른 경로의 직전 대화를 이어받음 (실제 Claude)', () => {
+  it('목소리 설정 안내 직후 "그거 어떻게 하는 건데?"', async () => {
+    const fc = new FastChat({ env: () => ({}), name: () => '자비스', memory: () => '', model: () => 'sonnet', cwd: () => tmpdir() })
+    const ctx = '[참고: 방금까지 다른 경로로 주고받은 대화]\n사용자: 목소리 더 내려받기\n자비스: 음성 설정을 열었습니다. "시스템 음성 → 음성 관리"에서 한국어 목소리(예: 유나 고품질, 수현, 민수 등)를 내려받은 뒤 다시 "목소리 바꿔줘"라고 해 주세요.\n\n[지금 사용자 말]\n그거 어떻게 하는 건데? 짧게.'
+    const ans = await fc.ask(ctx, () => undefined)
+    console.log(`  → ${ans}`)
+    expect(ans).toMatch(/음성|목소리|설정|관리/)
+    fc.close()
+  }, 120_000)
+})

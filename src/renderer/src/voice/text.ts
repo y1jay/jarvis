@@ -67,7 +67,7 @@ export function soundKey(s: string): string {
   return out
 }
 
-function editDistance(a: string, b: string): number {
+export function editDistance(a: string, b: string): number {
   const m = a.length
   const n = b.length
   let prev = Array.from({ length: n + 1 }, (_, j) => j)
@@ -118,7 +118,23 @@ function fuzzyWake(raw: string, wakeWords: string[]): WakeMatch {
 }
 
 /** Whisper 가 무음에서 자주 뱉는 환각 문구 */
-const HALLUCINATIONS = [/^시청해\s*주셔서\s*감사합니다/, /^구독과\s*좋아요/, /^감사합니다\.?$/, /^\(.*\)$/, /^\[.*\]$/, /^MBC\s*뉴스/, /^thank you\.?$/i, /^you$/i, /^\.+$/]
+// 소리가 거의 없을 때 인식 엔진이 지어내는 말 (영상 자막 학습 흔적)
+const HALLUCINATIONS = [/^시청해\s*주셔서\s*감사합니다/, /시청해\s*주셔서/, /^구독과\s*좋아요/, /구독.*(좋아요|알림)/, /^감사합니다\.?$/, /자막\s*(제공|by|제작)/i, /광고를\s*포함/, /^\(.*\)$/, /^\[.*\]$/, /^MBC\s*뉴스/, /^thank you\.?$/i, /^you$/i, /^\.+$/, /^(음+|어+|아+|흠+)[.!?]*$/]
+
+/**
+ * 말이 아직 안 끝난 것 같은지 — 문장 중간에 잠깐 쉰 경우 ("오늘 일정 정리해서…", "엄마한테…", "커밋은…").
+ * 이럴 땐 바로 실행하지 않고 이어지는 말을 잠깐 기다렸다가 합쳐서 다시 인식한다.
+ * 한국어 문장 끝맺음(~줘/~해/~야/~요/~다/~까 …)으로 끝나면 끝난 말로 본다.
+ */
+const FINISHED_END = /(줘|해|워|돼|대|내|해라|하자|봐|라|요|야|다|까|냐|니|지|죠|래|려|자|네|어|아|여|군|걸|셈|음|함|게요|세요|십시오|습니다|ㅂ니다)$/
+export function looksUnfinished(t: string): boolean {
+  const s = t.trim().replace(/[\s.,…~·"'”’)\]]+$/u, '')
+  if (!s) return false
+  if (/[?!？！]$/.test(t.trim())) return false
+  const last = s.split(/\s+/).pop() ?? ''
+  if (!/[가-힣]/.test(last)) return false // 영어/숫자로 끝나면 판단하지 않음
+  return !FINISHED_END.test(last)
+}
 
 export function isLikelyHallucination(t: string): boolean {
   const s = t.trim()

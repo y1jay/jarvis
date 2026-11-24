@@ -125,6 +125,8 @@ const api = {
     status: () => invoke<{ available: boolean; state: string; progress?: number; message?: string; model?: string }>('stt:status'),
     start: () => invoke<boolean>('stt:start'),
     transcribe: (buf: ArrayBuffer) => invoke<string>('stt:transcribe', buf),
+    /** 학습용 말소리 샘플 (Opus 압축) — main 이 암호로 잠가 저장 */
+    sample: (s: { heard: string; packets: ArrayBuffer[]; sampleRate: number; device?: string }) => invoke<void>('stt:sample', s),
     onState: (cb: (s: { available: boolean; state: string; progress?: number; message?: string; model?: string }) => void) => on('stt:state', cb)
   },
   voice: {
@@ -157,6 +159,18 @@ const api = {
     path: () => invoke<string>('audit:path')
   },
   media: { request: (kind: 'camera' | 'microphone') => invoke<boolean>('media:request', kind) },
+  /** 사람 같은 목소리 (Qwen3 / Supertonic) */
+  tts: {
+    /** 지금 고른 목소리로 문장 → 소리(WAV). 운영체제 목소리면 null */
+    speak: (text: string) => invoke<ArrayBuffer | null>('tts:speak', text),
+    /** 목소리 미리듣기 (설치 안 된 엔진이면 오류) */
+    preview: (voiceId: string) => invoke<ArrayBuffer | null>('tts:preview', voiceId),
+    voices: () => invoke<Array<{ id: string; engine: string; label: string; desc: string; installed: boolean; favorite: boolean }>>('tts:voices'),
+    /** 이 목소리로 바꾸기 (필요하면 엔진 설치 — Qwen3 는 승인 후) → 결과 메시지 */
+    use: (voiceId: string) => invoke<string>('tts:use', voiceId),
+    favorite: (voiceId: string, on: boolean) => invoke<string[]>('tts:favorite', voiceId, on),
+    onState: (cb: (s: { engine: string; state: string; message?: string; progress?: number }) => void) => on('tts:state', cb)
+  },
   win: {
     minimize: () => invoke<void>('win:minimize'),
     toggleMaximize: () => invoke<void>('win:toggleMaximize'),
@@ -166,6 +180,12 @@ const api = {
   app: {
     info: () => invoke<{ platform: string; version: string; userData: string; cwd: string }>('app:info'),
     onSummon: (cb: () => void) => on('jarvis:summon', cb),
+    /** 대화창 열기/닫기 ("대화창 닫아") */
+    onPanel: (cb: (open: boolean) => void) => on('ui:panel', cb),
+    /** 왼쪽 AI 연결 창 열기/닫기 */
+    onSide: (cb: (open: boolean) => void) => on('ui:side', cb),
+    /** 탭 열기 ("다른 목소리 미리듣기" → 설정) */
+    onTab: (cb: (tab: string) => void) => on('ui:tab', cb),
     onToggleListen: (cb: () => void) => on('voice:toggle', cb)
   }
 }

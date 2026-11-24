@@ -21,9 +21,15 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
     sttModel: 'onnx-community/whisper-small',
     language: 'korean',
     inputDeviceId: null,
-    // 맥(GPU)은 정확한 large-v3-turbo, 윈도우(CPU)는 가벼운 small
-    nativeModel: process.platform === 'darwin' ? 'large-v3-turbo' : 'small',
-    bargeIn: true
+    // 맥(GPU)은 가장 정확한 large-v3, 윈도우(CPU)는 가벼운 small
+    nativeModel: process.platform === 'darwin' ? 'large-v3' : 'small',
+    bargeIn: true,
+    learning: true,
+    learnLimitMB: 500,
+    learnRepo: null,
+    contextCorrection: true,
+    ttsVoiceId: 'system',
+    ttsFavorites: ['qwen3:sohee', 'qwen3:assistant', 'supertonic:3', 'supertonic:6', 'supertonic:9']
   },
   camera: { enabled: false, deviceId: null },
   alwaysOnTop: false,
@@ -33,6 +39,7 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   launchAtLogin: true,
   fastLane: true,
   fastModel: 'sonnet',
+  actionModel: 'sonnet',
   learning: { enabled: true }
 }
 

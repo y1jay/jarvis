@@ -71,10 +71,13 @@ describe('목소리 / 에뮬레이터 명령', () => {
     expect(parseVoiceIntent('README 바꿔줘')).toBeNull()
   })
   it.each([
-    ['에뮬레이터 띄워줘', 'start', 'android', undefined, ''],
+    // 그냥 "에뮬레이터" = 기본값(아이폰 시뮬레이터). 안드로이드는 분명히 말할 때만
+    ['에뮬레이터 띄워줘', 'start', null, undefined, ''],
+    ['안드로이드 에뮬레이터 띄워줘', 'start', 'android', undefined, ''],
     ['에뮬레이터 Pixel_8 켜줘', 'start', 'android', 'Pixel_8', ''],
-    ['에뮬레이터 띄워서 앱 실행해서 확인해', 'start', 'android', undefined, '앱 실행해서 확인해'],
-    ['에뮬레이터 꺼줘', 'stop', 'android', undefined, ''],
+    ['안드로이드 에뮬레이터 띄워서 앱 실행해서 확인해', 'start', 'android', undefined, '앱 실행해서 확인해'],
+    ['갤럭시 에뮬레이터 켜줘', 'start', 'android', undefined, ''],
+    ['에뮬레이터 꺼줘', 'stop', null, undefined, ''],
     ['아이폰 시뮬레이터 띄워줘', 'start', 'ios', undefined, ''],
     ['시뮬레이터 켜서 로그인 화면 확인해', 'start', 'ios', undefined, '로그인 화면 확인해'],
     ['시뮬레이터 꺼', 'stop', 'ios', undefined, ''],
@@ -137,5 +140,28 @@ describe('기타', () => {
   it('adb input text 이스케이프', () => {
     expect(escapeInputText('hello world')).toBe('hello%sworld')
     expect(escapeInputText('a&b')).toBe('a\\&b')
+  })
+})
+
+describe('발음이 비슷한 선택지 고르기', () => {
+  it('음성 인식이 조금 틀려도 맞는 선택지로', async () => {
+    const { resolveChoice } = await import('../../src/main/asker')
+    const opts = ['유나', 'Samantha (영어)', 'Daniel (영어)', '목소리 더 내려받기']
+    expect(resolveChoice('더 내려가다', opts)).toBe('목소리 더 내려받기')
+    expect(resolveChoice('를 내려받아', opts)).toBe('목소리 더 내려받기')
+    expect(resolveChoice('유나로', opts)).toBe('유나')
+    expect(resolveChoice('사만다', opts)).toBeNull() // 한글/영어 섞인 건 억지로 고르지 않음
+    expect(resolveChoice('나쁜 거야?', opts)).toBeNull()
+  })
+})
+
+describe('기본 기기 고르기', () => {
+  it('켜져 있는 것 → 최신 iOS 아이폰', async () => {
+    const { DeviceHub } = await import('../../src/main/devices')
+    const h = new DeviceHub()
+    const c = (label: string, platform: 'ios' | 'android' = 'ios') => ({ platform, id: label, label })
+    expect(h.pickDefault([c('iPad Pro (iOS 26.4)'), c('iPhone 16 (iOS 18.6)'), c('iPhone 17 (iOS 26.4)')])?.id).toBe('iPhone 17 (iOS 26.4)')
+    expect(h.pickDefault([c('iPhone 17 (iOS 26.4)'), c('iPhone 15 (iOS 18.6) · 켜져 있음')])?.id).toBe('iPhone 15 (iOS 18.6) · 켜져 있음')
+    expect(h.pickDefault([])).toBeNull()
   })
 })

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Electron 실행에 필요 (electron-builder 기본값) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- hardenedRuntime 에서는 이 권한이 없으면 macOS 가 마이크/카메라를 막는다 ("마이크를 사용할 수 없습니다") -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <!-- 다른 앱 열기/조작 (AppleScript) -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+  </dict>
+</plist>

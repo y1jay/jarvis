@@ -18,12 +18,13 @@ export interface SttModel {
 const HF = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main'
 export const MODELS: Record<string, SttModel> = {
   'large-v3-turbo': { file: 'ggml-large-v3-turbo-q5_0.bin', url: `${HF}/ggml-large-v3-turbo-q5_0.bin`, bytes: 574_041_195, label: 'Large v3 Turbo (정확, 약 570MB)' },
+  'large-v3': { file: 'ggml-large-v3-q5_0.bin', url: `${HF}/ggml-large-v3-q5_0.bin`, bytes: 1_081_140_203, label: 'Large v3 (가장 정확, 약 1.1GB, 조금 느림)' },
   small: { file: 'ggml-small-q5_1.bin', url: `${HF}/ggml-small-q5_1.bin`, bytes: 190_085_487, label: 'Small (가벼움, 약 190MB)' }
 }
 
 /** 맥(GPU)은 정확한 turbo, 윈도우(CPU)는 가벼운 small 이 기본 */
 export function defaultModelKey(): string {
-  return process.platform === 'darwin' ? 'large-v3-turbo' : 'small'
+  return process.platform === 'darwin' ? 'large-v3' : 'small'
 }
 
 /** 16kHz mono Float32 → 16bit PCM WAV */
@@ -51,6 +52,29 @@ export function encodeWav(pcm: Float32Array, rate = 16000): Buffer {
 }
 
 /** 인식 힌트(어휘): 이름·프로젝트·앱 이름을 알려 주면 고유명사를 훨씬 잘 맞힌다. Whisper 프롬프트 한도 안으로 자른다 */
+export interface TranscribeOptions {
+  /** 빔 서치 폭 (1 이하 = 그리디). 크면 정확하지만 조금 느리다 */
+  beamSize?: number
+  /** 작게 들어온 소리(블루투스 헤드셋 등)를 일정한 크기로 키워서 보낸다 */
+  normalize?: boolean
+}
+export const DEFAULT_TRANSCRIBE: TranscribeOptions = { beamSize: 5, normalize: true }
+
+/** 소리 크기 맞추기: 최댓값이 0.9 가 되도록 (최대 20배까지만 — 잡음만 키우지 않게) */
+export function normalizeGain(pcm: Float32Array, target = 0.9, maxGain = 20): Float32Array {
+  let peak = 0
+  for (let i = 0; i < pcm.length; i++) {
+    const a = Math.abs(pcm[i])
+    if (a > peak) peak = a
+  }
+  if (peak < 1e-5) return pcm
+  const g = Math.min(maxGain, target / peak)
+  if (g <= 1.05) return pcm
+  const out = new Float32Array(pcm.length)
+  for (let i = 0; i < pcm.length; i++) out[i] = pcm[i] * g
+  return out
+}
+
 export function buildVocabPrompt(words: string[], maxChars = 180): string {
   const seen = new Set<string>()
   const out: string[] = []
@@ -201,19 +225,27 @@ export class NativeStt {
     return this.starting
   }
 
-  async transcribe(pcm: Float32Array, prompt = ''): Promise<string> {
+  async transcribe(pcm: Float32Array, prompt = '', opts: TranscribeOptions = DEFAULT_TRANSCRIBE): Promise<string> {
+    return (await this.transcribeDetailed(pcm, prompt, opts)).text
+  }
+
+  /** 받아 적은 문장 + 엔진의 확신도(avg_logprob, 0 에 가까울수록 확신. 보통 -0.12 아래면 틀렸을 가능성이 큼) */
+  async transcribeDetailed(pcm: Float32Array, prompt = '', opts: TranscribeOptions = DEFAULT_TRANSCRIBE): Promise<{ text: string; logprob: number }> {
     if (!this.ready && !(await this.start())) throw new Error(this.state.message ?? '음성 엔진 준비 안 됨')
     const fd = new FormData()
-    fd.append('file', new Blob([new Uint8Array(encodeWav(pcm))], { type: 'audio/wav' }), 'speech.wav')
+    const audio = opts.normalize ? normalizeGain(pcm) : pcm
+    fd.append('file', new Blob([new Uint8Array(encodeWav(audio))], { type: 'audio/wav' }), 'speech.wav')
     fd.append('language', 'ko')
     fd.append('temperature', '0')
-    fd.append('response_format', 'json')
+    if (opts.beamSize && opts.beamSize > 1) fd.append('beam_size', String(opts.beamSize))
+    fd.append('response_format', 'verbose_json')
     if (prompt) fd.append('prompt', prompt)
     const r = await fetch(`http://127.0.0.1:${this.port}/inference`, { method: 'POST', body: fd })
     if (!r.ok) throw new Error(`인식 실패 HTTP ${r.status}`)
-    const j = JSON.parse((await r.text()).replace(/[\u0000-\u001f]+/g, ' ')) as { text?: string; error?: string }
+    const j = JSON.parse((await r.text()).replace(/[\u0000-\u001f]+/g, ' ')) as { text?: string; error?: string; segments?: Array<{ avg_logprob?: number }> }
     if (j.error) throw new Error(j.error)
-    return (j.text ?? '').replace(/\s+/g, ' ').trim()
+    const lps = (j.segments ?? []).map((x) => x.avg_logprob ?? 0)
+    return { text: (j.text ?? '').replace(/\s+/g, ' ').trim(), logprob: lps.length ? Math.min(...lps) : 0 }
   }
 
   stop(): void {

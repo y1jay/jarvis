@@ -34,6 +34,17 @@ export class DeviceHub {
     return out
   }
 
+  /** 따로 말하지 않으면 열 기기: 켜져 있는 것 → 최신 iOS 의 아이폰 → 첫 번째 */
+  pickDefault(choices: DeviceChoice[]): DeviceChoice | null {
+    if (!choices.length) return null
+    const booted = choices.find((c) => c.label.includes('켜져 있음'))
+    if (booted) return booted
+    const ver = (c: DeviceChoice): number => Number(/\(iOS ([\d.]+)\)/.exec(c.label)?.[1]?.split('.').map((x, i) => Number(x) / 100 ** i).reduce((a, b) => a + b, 0) ?? 0)
+    const phones = choices.filter((c) => c.platform === 'ios' && /iPhone/.test(c.label))
+    if (phones.length) return [...phones].sort((a, b) => ver(b) - ver(a))[0]
+    return choices[0]
+  }
+
   /** 이름으로 고르기: "iPhone 17 Pro", "Pixel_8" */
   match(choices: DeviceChoice[], name: string): DeviceChoice | null {
     const n = (s: string): string => s.toLowerCase().replace(/[\s_\-()]/g, '')
@@ -129,9 +140,11 @@ export function parseDeviceIntent(text: string): { action: 'start' | 'stop'; pla
   const m = /(아이폰\s*시뮬레이터|iphone\s*simulator|ios\s*시뮬레이터|시뮬레이터|simulator|안드로이드\s*에뮬레이터|에뮬레이터|에뮬|emulator|애뮬레이터|가상\s*기기|테스트\s*기기)\s*(?:를|을)?\s*([A-Za-z0-9_][\w\s.-]*?)?\s*(띄워|켜|실행|열어|시작|꺼|종료|닫아)[가-힣]*/i.exec(t)
   if (!m) return null
   const word = m[1].toLowerCase()
-  const before = t.slice(0, m.index)
-  let platform: Platform | null = /(아이폰|iphone|ios|시뮬레이터|simulator)/.test(word) || /(아이폰|iphone|ios)/i.test(before) ? 'ios' : /(안드로이드|에뮬|emulator)/.test(word) || /(안드로이드|android)/i.test(before) ? 'android' : null
-  if (/가상\s*기기|테스트\s*기기/.test(word)) platform = /(아이폰|iphone|ios)/i.test(t) ? 'ios' : /(안드로이드|android)/i.test(t) ? 'android' : null
+  // 안드로이드는 '안드로이드/갤럭시/픽셀/AVD' 라고 분명히 말할 때만. 그 외(시뮬레이터, 그냥 "에뮬레이터", 테스트 기기)는 기본값(아이폰)
+  const androidSaid = /(안드로이드|android|갤럭시|galaxy|픽셀|pixel|avd)/i.test(t)
+  const iosSaid = /(아이폰|iphone|ios|아이패드|ipad)/i.test(t)
+  let platform: Platform | null = androidSaid && !iosSaid ? 'android' : iosSaid ? 'ios' : null
+  if (!platform && /(시뮬레이터|simulator)/.test(word)) platform = 'ios'
   const stop = /(꺼|종료|닫아)/.test(m[3])
   const rest = t
     .slice(m.index + m[0].length)

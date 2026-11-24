@@ -209,6 +209,11 @@ button { font: inherit; color: inherit; }
 @keyframes rise { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 @media (max-width: 1250px) { .body { grid-template-columns: 220px 1fr 380px; } }
+/* 대화창 닫으면 홀로그램이 그 자리까지 넓어진다 */
+.body.panel-closed { grid-template-columns: 250px 1fr; }
+@media (max-width: 1250px) { .body.panel-closed { grid-template-columns: 220px 1fr; } }
+.panel[hidden] { display: none; }
+.tab.panel-close { flex: 0 0 auto; padding: 0 10px; font-size: 18px; opacity: 0.7; }
 .modal-voice { color: var(--teal); font-size: 12px; margin: -2px 0 10px; animation: pulse 1.6s infinite; }
 
 /* sessions */
@@ -288,3 +293,19 @@ button { font: inherit; color: inherit; }
 .modal-image { width: 100%; max-height: 260px; object-fit: contain; border: 1px solid var(--line); border-radius: 4px; margin-bottom: 10px; background: #000; }
 .mic-meter { width: 160px; height: 4px; margin: 8px auto 0; background: rgba(56, 214, 255, 0.15); border-radius: 2px; overflow: hidden; }
 .mic-meter > div { height: 100%; background: var(--teal); box-shadow: 0 0 6px var(--teal); transition: width 0.08s; }
+
+/* 목소리 고르기 */
+.voice-picker { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.vp-group { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.vp-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; }
+.vp-row.vp-on { border-color: var(--accent, #5fd6ff); }
+.vp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vp-row button { padding: 2px 8px; }
+.vp-fav { background: none; border: none; color: #ffd34d; font-size: 15px; cursor: pointer; }
+
+/* 왼쪽 AI 연결 창 닫기 */
+.side-toggle { -webkit-app-region: no-drag; background: none; border: 1px solid var(--line); color: inherit; border-radius: 6px; padding: 0 8px; height: 24px; cursor: pointer; }
+.side[hidden] { display: none; }
+.body.side-closed { grid-template-columns: 0 1fr 440px; }
+.body.side-closed.panel-closed { grid-template-columns: 0 1fr; }
+@media (max-width: 1250px) { .body.side-closed { grid-template-columns: 0 1fr 380px; } .body.side-closed.panel-closed { grid-template-columns: 0 1fr; } }

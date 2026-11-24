@@ -122,6 +122,18 @@ export interface JarvisSettings {
     nativeModel: string
     /** JARVIS 가 말하는 중에도 사용자가 말하면 멈추고 듣기 */
     bargeIn: boolean
+    /** 내 목소리·말투 학습 (말소리는 내 암호로 잠가 숨김 폴더에, 말투는 키체인으로 잠가 저장) */
+    learning: boolean
+    /** 말소리 샘플 최대 용량 (MB) — 넘으면 오래된 것부터 지움 */
+    learnLimitMB: number
+    /** 학습 데이터 백업용 git 저장소 폴더 (비공개 저장소 권장) */
+    learnRepo: string | null
+    /** 문맥 보정: 엔진이 자신 없게 받아 적은 말을 대화 흐름으로 바로잡기 */
+    contextCorrection: boolean
+    /** 말하는 목소리 ('system' = 운영체제 목소리, 'qwen3:sohee', 'supertonic:3' …) */
+    ttsVoiceId: string
+    /** 자주 쓰는 목소리 (말로 "목소리 바꿔줘" 할 때 먼저 보여 줌) */
+    ttsFavorites: string[]
   }
   camera: {
     enabled: boolean
@@ -140,6 +152,8 @@ export interface JarvisSettings {
   fastLane: boolean
   /** 빠른 대화에 쓸 모델 */
   fastModel: string
+  /** 프로젝트 밖 일상 행동(앱·폴더·웹·메시지·시스템 정보)을 처리할 일반 세션 모델. 비우면 기본 모델 */
+  actionModel: string
   /** 대화에서 사용자 정보를 학습해 기억할지 */
   learning: { enabled: boolean }
 }
@@ -184,6 +198,14 @@ export type AuditAction =
   | 'agent.interrupt'
   | 'settings.changed'
   | 'system.app.open'
+  | 'system.permission.missing'
+  | 'voice.vault.setup'
+  | 'voice.vault.backup'
+  | 'voice.vault.restore'
+  | 'voice.vault.clear'
+  | 'voice.lexicon.fix'
+  | 'voice.correct'
+  | 'tts.install'
   | 'system.app.quit'
   | 'system.url.open'
   | 'system.path.open'

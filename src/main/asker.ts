@@ -1,6 +1,7 @@
 // JARVIS 가 작업 도중 사용자에게 되묻기 (선택지 / 자유 답변 / 비밀값).
 // 비밀값(비밀번호, 인증번호)은 AI 에게 전달되지 않고, 이력에도 남지 않는다.
 import { randomUUID } from 'node:crypto'
+import { editDistance, soundKey } from '../renderer/src/voice/text'
 
 export type QuestionKind = 'choice' | 'text' | 'secret' | 'code'
 
@@ -66,7 +67,42 @@ export function resolveChoice(answer: string, options: string[]): string | null 
   const exact = options.find((o) => n(o) === n(a))
   if (exact) return exact
   const contains = options.filter((o) => n(a).includes(n(o)) || n(o).includes(n(a)))
-  return contains.length === 1 ? contains[0] : null
+  if (contains.length === 1) return contains[0]
+  return fuzzyChoice(a, options)
+}
+
+/**
+ * 발음이 비슷한 선택지 (음성 인식이 조금 틀린 경우: "더 내려가다" → "목소리 더 내려받기").
+ * 자모 단위로 비교하고, 선택지의 일부 단어 묶음과도 비교한다. 확실히 하나만 가까울 때만 고른다.
+ */
+export function fuzzyChoice(answer: string, options: string[]): string | null {
+  const clean = answer.replace(/[?!.]+$/, '').replace(/(으로|로|요|이요|해줘|해 줘|할래|로 해)$/, '').trim()
+  const full = soundKey(clean)
+  if (full.length < 3) return null
+  // 대답 쪽도 단어 묶음으로 (앞 조사 하나가 잘못 붙는 경우: "를 내려받아") — 단, 대답의 60% 이상을 덮는 묶음만
+  const aw = clean.split(/\s+/)
+  const answers: string[] = []
+  for (let i = 0; i < aw.length; i++) for (let j = i + 1; j <= aw.length; j++) {
+    const k = soundKey(aw.slice(i, j).join(' '))
+    if (k.length >= 3 && k.length >= full.length * 0.6) answers.push(k)
+  }
+  const sim = (ka: string, x: string): number => {
+    const kx = soundKey(x)
+    if (!kx) return 0
+    return 1 - editDistance(ka, kx) / Math.max(ka.length, kx.length)
+  }
+  const scored = options
+    .map((o) => {
+      const words = o.replace(/\(.*?\)/g, '').trim().split(/\s+/)
+      let best = 0
+      for (const ka of answers) for (let i = 0; i < words.length; i++) for (let j = i + 1; j <= words.length; j++) best = Math.max(best, sim(ka, words.slice(i, j).join(' ')))
+      return { o, best }
+    })
+    .sort((x, y) => y.best - x.best)
+  const [first, second] = scored
+  if (!first || first.best < 0.65) return null
+  if (second && first.best - second.best < 0.12) return null
+  return first.o
 }
 
 /** 음성으로 불러준 인증번호 정규화: "일 이 삼 사 오 육" / "123 456" → "123456" */

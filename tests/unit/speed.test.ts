@@ -1,6 +1,6 @@
 // 응답 속도 개선: 빠른 대화 경로 판정, 문장 단위 읽기, 네이티브 인식 입력/힌트
 import { describe, expect, it } from 'vitest'
-import { needsAgent, AGENT_TOKEN } from '../../src/main/fastchat'
+import { needsAgent, AGENT_TOKEN, isCodeWork } from '../../src/main/fastchat'
 import { takeSentences } from '../../src/renderer/src/voice/text'
 import { buildVocabPrompt, encodeWav, MODELS, defaultModelKey } from '../../src/main/stt'
 
@@ -60,5 +60,14 @@ describe('네이티브 음성 인식 보조', () => {
   })
   it('플랫폼 기본 모델', () => {
     expect(MODELS[defaultModelKey()]).toBeTruthy()
+  })
+})
+
+describe('일상 행동 vs 프로젝트 작업 구분 (일상 행동은 빠른 모델 세션으로)', () => {
+  it.each(['크롬 열어줘', '다운로드 폴더에 파일 몇 개야', '디스크 남은 용량 알려줘', '카톡으로 엄마한테 늦는다고 보내', '유튜브에서 아이유 노래 틀어줘', '스크린샷 찍어줘', '아이폰 시뮬레이터 띄워줘', '오늘 서울 날씨 검색해줘'])('일상: %s', (t) => {
+    expect(isCodeWork(t)).toBe(false)
+  })
+  it.each(['로그인 버그 고쳐줘', '테스트 돌려', '커밋해줘', 'API 하나 추가해줘', 'README 수정해', 'index.ts 읽어봐', '이 프로젝트 구조 설명해', '빌드 에러 확인해', '결제 기능 구현해줘'])('프로젝트: %s', (t) => {
+    expect(isCodeWork(t)).toBe(true)
   })
 })

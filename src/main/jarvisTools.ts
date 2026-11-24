@@ -229,7 +229,7 @@ export function createJarvisTools(host: JarvisToolHost) {
       tool('device_list', '사용 가능한 기기 목록 (아이폰 시뮬레이터, 안드로이드 AVD)', {}, async () =>
         guard(async () => text((await host.devices.choices()).map((c) => `${c.platform}: ${c.label}`).join('\n') || '(없음)'))
       ),
-      tool('device_start', '기기 실행 (JARVIS 팝업에 화면 표시). platform/name 생략 시 사용자에게 물어봄', { platform: z.enum(['ios', 'android']).optional(), name: z.string().optional() }, async ({ platform, name }) => text(await host.startDevice(platform, name))),
+      tool('device_start', '기기 실행 (JARVIS 팝업에 화면 표시). platform 생략 시 아이폰 시뮬레이터(기본값). 안드로이드는 사용자가 안드로이드를 요청했을 때만', { platform: z.enum(['ios', 'android']).optional(), name: z.string().optional() }, async ({ platform, name }) => text(await host.startDevice(platform, name))),
       tool('device_stop', '기기 끄기 (JARVIS 가 켠 것만 종료)', {}, async () => text(await host.stopDevice())),
       tool('device_screenshot', '기기 화면 캡처 → PNG 경로 (Read 로 보기). 탭 좌표는 이 이미지 픽셀 기준', {}, async () => guard(async () => text(await host.devices.screenshotFile()))),
       tool('device_tap', '화면 탭 (스크린샷 픽셀 좌표)', { x: z.number(), y: z.number() }, async ({ x, y }) => guard(async () => text(await host.devices.tap(x, y)))),

@@ -133,3 +133,53 @@ describe('사이트 로그인 연동', () => {
     expect(splitTargets('jarvis')).toEqual(['jarvis'])
   })
 })
+
+describe('다시 말해줘', () => {
+  it('방금 한 말 다시 요청', async () => {
+    const { isRepeatRequest } = await import('../../src/main/intents')
+    for (const t of ['다시 말해봐', '다시 말해줘', '한 번 더 말해 줘', '뭐라고?', '뭐라고요', '방금 뭐라고 했어', '다시 얘기해 줄래']) expect(isRepeatRequest(t)).toBe(true)
+    for (const t of ['다시 빌드해줘', '뭐라고 보내야 할까', '말해봐 오늘 날씨', '다시 말해봐 그 파일 이름 바꿔서']) expect(isRepeatRequest(t)).toBe(false)
+  })
+})
+
+describe('대화창 열기/닫기', () => {
+  it('말로 열고 닫기', async () => {
+    const { parsePanelIntent } = await import('../../src/main/intents')
+    expect(parsePanelIntent('대화창 닫아')).toBe(false)
+    expect(parsePanelIntent('대화창 좀 숨겨줘')).toBe(false)
+    expect(parsePanelIntent('채팅창 열어줘')).toBe(true)
+    expect(parsePanelIntent('대화창 다시 보여줘')).toBe(true)
+    expect(parsePanelIntent('카톡 대화창 열어서 엄마한테 보내')).toBeNull()
+    expect(parsePanelIntent('크롬 닫아')).toBeNull()
+  })
+})
+
+describe('왼쪽 AI 연결 창 열기/닫기', () => {
+  it('말로 열고 닫기', async () => {
+    const { parseSideIntent } = await import('../../src/main/intents')
+    expect(parseSideIntent('왼쪽 창 닫아')).toBe(false)
+    expect(parseSideIntent('AI 연결창 좀 숨겨줘')).toBe(false)
+    expect(parseSideIntent('사이드바 열어줘')).toBe(true)
+    expect(parseSideIntent('왼쪽 창 다시 보여줘')).toBe(true)
+    expect(parseSideIntent('카톡 창 닫아')).toBeNull()
+    expect(parseSideIntent('대화창 닫아')).toBeNull()
+  })
+})
+
+describe('시간·날짜는 시계로 바로', () => {
+  it('답한다', async () => {
+    const { timeAnswer } = await import('../../src/main/intents')
+    const d = new Date(2026, 10, 24, 16, 35)
+    expect(timeAnswer('지금 몇 시야', d)).toBe('지금은 오후 4시 35분이에요.')
+    expect(timeAnswer('자비스 지금 몇 시야?', d)).toBe('지금은 오후 4시 35분이에요.')
+    expect(timeAnswer('오늘 며칠이야', d)).toBe('오늘은 11월 24일 화요일이에요.')
+    expect(timeAnswer('오늘 무슨 요일이고 몇 시야', d)).toBe('오늘은 11월 24일 화요일, 지금은 오후 4시 35분이에요.')
+    expect(timeAnswer('지금 몇 시', new Date(2026, 0, 1, 0, 0))).toBe('지금은 오전 12시예요.')
+    expect(timeAnswer('지금 몇 시', new Date(2026, 0, 1, 15, 0))).toBe('지금은 오후 3시예요.')
+  })
+  it('관계없는 말', async () => {
+    const { timeAnswer } = await import('../../src/main/intents')
+    expect(timeAnswer('회의 몇 시에 잡을까 고민인데 일정 다 보여주고 정리해줘')).toBeNull()
+    expect(timeAnswer('크롬 열어줘')).toBeNull()
+  })
+})

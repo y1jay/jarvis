@@ -189,6 +189,14 @@ export class Orchestrator {
     rec.provider.warm(this.d.buildContext({ ...rec.info }, 'warm', () => undefined))
   }
 
+  /** 특정 (AI, 프로젝트) 세션을 포커스 변경 없이 미리 띄워 둔다 — 일상 행동용 일반 세션 */
+  prewarmFor(provider: ProviderId, projectDir: string | null): void {
+    const info = this.sessionFor(provider, projectDir, false)
+    const rec = this.sessions.get(info.id)
+    if (!rec?.provider.warm) return
+    rec.provider.warm(this.d.buildContext({ ...rec.info }, 'warm', () => undefined))
+  }
+
   resetAll(): void {
     for (const id of [...this.sessions.keys()]) this.close(id)
   }
@@ -270,7 +278,7 @@ export class Orchestrator {
    * 요청 하나 = 작업(Job) 하나. 여러 프로젝트가 언급되면 계획을 세워 세션별로 나눠 실행하고 한 답변으로 합친다.
    * 반환값은 JARVIS 최종 답변.
    */
-  async runJob(job: JobInfo, prompt: string, provider: ProviderId, known: string[], opts?: { project: string | null }): Promise<JobInfo> {
+  async runJob(job: JobInfo, prompt: string, provider: ProviderId, known: string[], opts?: { project: string | null; focus?: boolean }): Promise<JobInfo> {
     job.status = 'planning'
     this.d.onJob(structuredClone(job))
     const focusedRec = this.focused ? this.sessions.get(this.focused) : undefined
@@ -296,7 +304,8 @@ export class Orchestrator {
     // 세션 배정
     const assigned = plan.map((t) => {
       const sameAsFocused = focusedRec && focusedRec.info.projectDir === t.project && focusedRec.info.provider === provider
-      const s = sameAsFocused ? { ...focusedRec.info } : this.sessionFor(provider, t.project, plan!.length === 1)
+      // focus:false = 일상 행동 세션처럼, 사용자가 보고 있던 프로젝트 포커스를 빼앗지 않는다
+      const s = sameAsFocused ? { ...focusedRec.info } : this.sessionFor(provider, t.project, opts?.focus ?? plan!.length === 1)
       return s
     })
     job.tasks = plan.map<TaskInfo>((t, i) => ({ id: randomUUID(), sessionId: assigned[i].id, title: assigned[i].title, instruction: t.instruction, status: 'pending', after: t.after }))

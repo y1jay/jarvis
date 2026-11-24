@@ -41,6 +41,14 @@ interface Live {
   q: Query
   input: AsyncQueue<SDKUserMessage>
   key: string
+  /** 이 프로세스가 알고 있는 기억 (시작 때 시스템 프롬프트 + 이후 전달한 갱신) */
+  memory: string
+}
+
+/** 기억이 바뀌었으면 프로세스를 다시 띄우지 않고 다음 메시지 앞에 붙여 알려 준다 */
+export function withMemoryUpdate(prompt: string, known: string, current: string): string {
+  if (!current || current === known) return prompt
+  return `[JARVIS 기억 갱신 — 이전 기억 대신 이것을 따른다]\n${current}\n\n[사용자 요청]\n${prompt}`
 }
 
 export class ClaudeProvider implements AgentProvider {
@@ -66,9 +74,12 @@ export class ClaudeProvider implements AgentProvider {
 
   private close(): void {
     if (!this.live) return
-    this.live.input.close()
-    this.live.q.close?.()
+    const live = this.live
     this.live = null
+    live.input.close()
+    live.q.close?.()
+    // 진행 중이던 턴이 있으면 여기서 끝낸다 (닫힌 프로세스의 종료 신호가 다음 턴을 끝내 버리지 않게)
+    this.finishTurn()
   }
 
   private gateHook: HookCallback = async (input) => {
@@ -126,8 +137,8 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   private ensure(ctx: TurnContext): Live {
-    // 기억이 바뀌면 같은 세션을 resume 하면서 새 시스템 프롬프트로 다시 연다
-    const key = JSON.stringify([ctx.cwd, ctx.model, ctx.permissionMode, ctx.env.ANTHROPIC_API_KEY ? 'key' : 'login', ctx.memory ?? ''])
+    // 기억은 키에 넣지 않는다 — 바뀔 때마다 프로세스를 다시 띄우면 느리고(1~2초), 바뀐 기억은 다음 메시지에 붙여 알려 준다
+    const key = JSON.stringify([ctx.cwd, ctx.model, ctx.permissionMode, ctx.env.ANTHROPIC_API_KEY ? 'key' : 'login'])
     if (this.live && this.live.key === key) return this.live
     this.close()
     const input = new AsyncQueue<SDKUserMessage>()
@@ -155,7 +166,7 @@ export class ClaudeProvider implements AgentProvider {
         }
       }
     })
-    const live: Live = { q, input, key }
+    const live: Live = { q, input, key, memory: ctx.memory ?? '' }
     this.live = live
     void this.pump(live)
     return live
@@ -167,8 +178,11 @@ export class ClaudeProvider implements AgentProvider {
     } catch (e) {
       this.ctx?.emit({ kind: 'error', message: (e as Error).message })
     } finally {
-      if (this.live === live) this.live = null
-      this.finishTurn()
+      // 지금 쓰는 프로세스가 예기치 않게 끝난 경우에만 턴을 끝낸다. 일부러 닫은(교체된) 프로세스의 종료는 무시
+      if (this.live === live) {
+        this.live = null
+        this.finishTurn()
+      }
     }
   }
 
@@ -249,11 +263,13 @@ export class ClaudeProvider implements AgentProvider {
   send(prompt: string, ctx: TurnContext): Promise<void> {
     this.ctx = ctx
     const live = this.ensure(ctx)
+    const content = withMemoryUpdate(prompt, live.memory, ctx.memory ?? '')
+    live.memory = ctx.memory ?? ''
     return new Promise<void>((resolve) => {
       this.turnDone = resolve
       live.input.push({
         type: 'user',
-        message: { role: 'user', content: prompt },
+        message: { role: 'user', content },
         parent_tool_use_id: null
       } as SDKUserMessage)
     })
