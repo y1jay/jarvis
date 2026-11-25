@@ -7,6 +7,7 @@ import { HandTracker } from './vision/handTracker'
 import type { HandState } from './vision/gestures'
 import { VoiceEngine, type VoicePhase } from './voice/VoiceEngine'
 import { isStopCommand, matchWakeWord, takeSentences } from './voice/text'
+import { isMostlyForeign } from '../../shared/lang'
 import { brandName, effectiveWakeWords, shortName } from '../../shared/wake'
 import { ChatPanel } from './components/ChatPanel'
 import { JarvisThread } from './components/JarvisThread'
@@ -18,7 +19,7 @@ import { ProviderPanel } from './components/ProviderPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ApprovalModal } from './components/ApprovalModal'
 import { QuestionCard, type Q } from './components/QuestionCard'
-import { CodeFeed, toFeedLines, type FeedLine } from './components/CodeFeed'
+import { CodeFeed, isShellTool, toFeedLines, toFeedOutput, type FeedLine } from './components/CodeFeed'
 import { AppMirrorPopup, BrowserPopup, DevicePopup, loadRect, overlaps, type PopupKind, type Rect } from './components/StagePanels'
 
 type Tab = 'chat' | 'git' | 'history' | 'memory' | 'settings'
@@ -214,7 +215,11 @@ export function App(): ReactNode {
   const jobsRef = useRef<JobInfo[]>([])
   jobsRef.current = jobs
   const streamBuf = useRef(new Map<string, string>())
+  /** 결과를 홀로그램 위에 흘려 보낼 터미널 명령들 */
+  const shellIds = useRef(new Set<string>())
   const streamed = useRef(new Set<string>())
+  /** 영어 문장이 섞여 와서 읽지 않고 넘긴 작업 */
+  const foreignJobs = useRef(new Set<string>())
   const wantsVoice = (jobId: string): boolean => {
     const j = jobsRef.current.find((x) => x.id === jobId)
     return !!settingsRef.current?.voice.ttsEnabled && !!voice.current && (j?.via === 'voice' || phaseRef.current !== 'off')
@@ -228,16 +233,18 @@ export function App(): ReactNode {
       ),
       window.jarvis.agent.onEvent(({ turnId, sessionId, event }) => {
         if (event.kind === 'file-change') setRefreshKey((k) => k + 1)
-        if (event.kind === 'tool-use') {
-          const add = toFeedLines(event.name, event.input)
-          if (add.length) {
-            setFeed((f) => [...f, ...add.map((l) => ({ ...l, id: ++feedSeq.current }))].slice(-800))
-            setFeedOpen(true)
-            // 30초 동안 새 코드가 없으면 저절로 사라진다 (</> 로 다시 볼 수 있음)
-            if (feedTimer.current) clearTimeout(feedTimer.current)
-            feedTimer.current = setTimeout(() => setFeedOpen(false), 30_000)
-          }
+        const pushFeed = (add: FeedLine[]): void => {
+          if (!add.length) return
+          setFeed((f) => [...f, ...add.map((l) => ({ ...l, id: ++feedSeq.current }))].slice(-800))
+          setFeedOpen(true)
+          // 30초 동안 새 코드·명령이 없으면 저절로 사라진다 (</> 로 다시 볼 수 있음)
+          if (feedTimer.current) clearTimeout(feedTimer.current)
+          feedTimer.current = setTimeout(() => setFeedOpen(false), 30_000)
         }
+        if (event.kind === 'tool-use') {
+          if (isShellTool(event.name)) shellIds.current.add(event.id)
+          pushFeed(toFeedLines(event.name, event.input))
+        } else if (event.kind === 'tool-result' && shellIds.current.delete(event.id)) pushFeed(toFeedOutput(event.output, event.isError))
         setSessionTurns((m) => ({ ...m, [sessionId]: (m[sessionId] ?? []).map((t) => (t.id === turnId ? applyEvent(t, event) : t)) }))
       }),
       window.jarvis.agent.onDone(({ turnId, sessionId }) => {
@@ -252,12 +259,17 @@ export function App(): ReactNode {
           setTimeout(() => holo.current?.getState() === 'error' && holo.current?.setState('idle'), 2500)
         }
         const v = voice.current
-        if (streamed.current.has(j.id) && v) {
+        // 영어로 온 답은 흘려 읽지 않았다 → main 이 한국어로 옮긴 답을 통째로 읽는다
+        const wasForeign = foreignJobs.current.delete(j.id)
+        if (wasForeign && !streamed.current.has(j.id)) {
+          streamBuf.current.delete(j.id)
+          if (j.answer && !isMostlyForeign(j.answer) && (j.via === 'voice' || phaseRef.current !== 'off')) speak(j.answer, j.via === 'voice')
+        } else if (streamed.current.has(j.id) && v) {
           // 이미 문장 단위로 읽는 중 → 남은 꼬리만 읽고, 끝나면 이어 말하기 대기
           const rest = (streamBuf.current.get(j.id) ?? '').trim()
           streamBuf.current.delete(j.id)
           streamed.current.delete(j.id)
-          if (rest) v.enqueue(rest)
+          if (rest && !isMostlyForeign(rest)) v.enqueue(rest)
           void v.whenIdle().then(() => {
             if (holo.current?.getState() === 'speaking') holo.current?.setState('idle')
             if (j.via === 'voice') v.keepAwake(20000)
@@ -271,10 +283,16 @@ export function App(): ReactNode {
         const buf = (streamBuf.current.get(jobId) ?? '') + text
         const { sentences, rest } = takeSentences(buf)
         streamBuf.current.set(jobId, rest)
-        if (!sentences.length) return
+        // 영어 문장은 소리 내 읽지 않는다 (끝나면 한국어로 옮긴 답을 읽는다)
+        const ko = sentences.filter((x) => {
+          if (!isMostlyForeign(x)) return true
+          foreignJobs.current.add(jobId)
+          return false
+        })
+        if (!ko.length) return
         streamed.current.add(jobId)
         holo.current?.setState('speaking')
-        for (const sentence of sentences) voice.current?.enqueue(sentence)
+        for (const sentence of ko) voice.current?.enqueue(sentence)
       }),
       window.jarvis.jarvis.onSpeak((t) => phaseRef.current !== 'off' && speak(t)),
       window.jarvis.session.onList(({ sessions, focused }) => {
@@ -430,6 +448,11 @@ export function App(): ReactNode {
   }
 
   // ── 승인 (클릭 / 음성) ──
+  /** 홀로그램 무대 위치 — 승인 요청을 그 위에만 띄운다 */
+  const stageBox = (): { left: number; top: number; width: number; height: number } | null => {
+    const r = stageRef.current?.getBoundingClientRect()
+    return r && r.width > 200 && r.height > 200 ? { left: r.left, top: r.top, width: r.width, height: r.height } : null
+  }
   const approvalsRef = useRef<ApprovalRequest[]>([])
   approvalsRef.current = approvals
   const respond = useCallback((approved: boolean, reason?: string, via: 'click' | 'voice' = 'click', transcript?: string): void => {
@@ -726,7 +749,7 @@ export function App(): ReactNode {
           onClose={() => setPopups((p) => ({ ...p, app: false }))}
         />
       )}
-      {approvals[0] && <ApprovalModal req={approvals[0]} voice={phase !== 'off'} onRespond={(ok, reason) => respond(ok, reason)} />}
+      {approvals[0] && <ApprovalModal req={approvals[0]} voice={phase !== 'off'} stage={stageBox()} onRespond={(ok, reason) => respond(ok, reason)} />}
       {toast && <div className={`toast ${toast.err ? 'toast-err' : ''}`}>{toast.m}</div>}
     </div>
   )

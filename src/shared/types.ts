@@ -202,6 +202,8 @@ export type AuditAction =
   | 'approval.denied'
   | 'agent.prompt'
   | 'agent.interrupt'
+  | 'agent.translate'
+  | 'agent.steer'
   | 'settings.changed'
   | 'system.app.open'
   | 'mirror.type'

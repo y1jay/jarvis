@@ -94,3 +94,22 @@ describe('보정이 방금 한 명령을 되풀이하지 않게', () => {
     expect(parseQuitIntent('카톡 꺼줘')?.target).toBe('카톡')
   })
 })
+
+describe('보정이 내 말의 뜻을 뒤집지 않게', () => {
+  it('[실제 재현] "네가 직접 해" 쪽 말을 "내가 직접 해"로 바꾸면 버린다', async () => {
+    const { acceptCorrection } = await import('../../src/main/corrector')
+    expect(acceptCorrection('평소에 카드가 커밍돼서 직접 해', '평소에 하던 대로 main 반영은 내가 직접 해')).toBe('평소에 카드가 커밍돼서 직접 해')
+    expect(acceptCorrection('니가 운영에 직접 배포하라고', '내가 운영에 직접 배포하라고')).toBe('니가 운영에 직접 배포하라고')
+  })
+  it('하지 말라는 말을 없애거나 새로 넣으면 버린다', async () => {
+    const { acceptCorrection } = await import('../../src/main/corrector')
+    expect(acceptCorrection('커밋하지 마', '커밋해 줘')).toBe('커밋하지 마')
+    expect(acceptCorrection('푸시해', '푸시하지 마')).toBe('푸시해')
+  })
+  it('뜻이 같은 교정은 그대로 받는다', async () => {
+    const { acceptCorrection } = await import('../../src/main/corrector')
+    expect(acceptCorrection('니가 운영에 직접 배포하라고', '네가 운영에 직접 배포하라고')).toBe('네가 운영에 직접 배포하라고')
+    expect(acceptCorrection('이랑 아이템 호텔 감소 수정한 거', '이랑 아이템 흡혈 감소 수정한 거')).toBe('이랑 아이템 흡혈 감소 수정한 거')
+    expect(acceptCorrection('사진 발고 없어?', '사진 말고 없어?')).toBe('사진 말고 없어?')
+  })
+})

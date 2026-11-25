@@ -137,8 +137,13 @@ export class DeviceHub {
 /** "에뮬레이터 띄워줘" / "아이폰 시뮬레이터 켜서 앱 확인해" / "시뮬레이터 꺼" */
 export function parseDeviceIntent(text: string): { action: 'start' | 'stop'; platform: Platform | null; name?: string; rest: string } | null {
   const t = text.trim().replace(/[.!?]+$/, '')
-  const m = /(아이폰\s*시뮬레이터|iphone\s*simulator|ios\s*시뮬레이터|시뮬레이터|simulator|안드로이드\s*에뮬레이터|에뮬레이터|에뮬|emulator|애뮬레이터|가상\s*기기|테스트\s*기기)\s*(?:를|을)?\s*([A-Za-z0-9_][\w\s.-]*?)?\s*(띄워|켜|실행|열어|시작|꺼|종료|닫아)[가-힣]*/i.exec(t)
+  const m = /(아이폰\s*시뮬레이터|iphone\s*simulator|ios\s*시뮬레이터|시뮬레이터|simulator|안드로이드\s*에뮬레이터|에뮬레이터|에뮬|emulator|애뮬레이터|가상\s*기기|테스트\s*기기)\s*(?:를|을)?\s*(?:(?:좀|한번|빨리|다시)\s*)?([A-Za-z0-9_][\w\s.-]*?)?\s*(?:(?:좀|한번|빨리|다시)\s*)?(띄워|켜|실행|열어|시작|꺼|종료|닫아)[가-힣]*/i.exec(t)
   if (!m) return null
+  // 시키는 말일 때만 ("켜줘/켜서/켜고/실행해/꺼"). 묻거나 따지거나 말리는 말은 명령이 아니다
+  //   "왜 시뮬레이터를 켜는 거야" / "시뮬레이터 켜지 마" / "시뮬레이터 켰어?" → 아님 (사용자 말이 먼저)
+  const verbTail = m[0].slice(m[0].lastIndexOf(m[3]) + m[3].length)
+  if (!/^(해|하고|해서|하)?(줘|줘요|줄래|주라|주세요|주고|줘서|줘봐|봐|봐줘|봐요|라|라고|고|서|요)?$/.test(verbTail)) return null
+  if (/(왜|말라|말고|하지\s*마|하지\s*말)/.test(t)) return null
   const word = m[1].toLowerCase()
   // 안드로이드는 '안드로이드/갤럭시/픽셀/AVD' 라고 분명히 말할 때만. 그 외(시뮬레이터, 그냥 "에뮬레이터", 테스트 기기)는 기본값(아이폰)
   const androidSaid = /(안드로이드|android|갤럭시|galaxy|픽셀|pixel|avd)/i.test(t)

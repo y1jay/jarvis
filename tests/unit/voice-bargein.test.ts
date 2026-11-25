@@ -90,8 +90,8 @@ describe('목소리 판별 (analyzeFrame)', () => {
 })
 
 describe('정지 명령 / 메아리', () => {
-  it.each(['멈춰', '그만', '그만해', '스톱', '잠깐 멈춰', '작업 중지', '다 멈춰!', 'Stop.'])('정지: %s', (t) => expect(isStopCommand(t)).toBe(true))
-  it.each(['멈춰있는 화면 캡처해줘', '그만 보고 커밋해', '음악 멈춰 있는지 확인해줘', '크롬 열어줘'])('정지 아님: %s', (t) => expect(isStopCommand(t)).toBe(false))
+  it.each(['멈춰', '그만', '그만해', '스톱', '잠깐 멈춰', '작업 중지', '다 멈춰!', 'Stop.', '멍청,', '멈추라는데 뭐가 잠깐만이야.', '그만하라니까 왜 계속해', '야 멈춰', '멈추라고'])('정지: %s', (t) => expect(isStopCommand(t)).toBe(true))
+  it.each(['멈춰있는 화면 캡처해줘', '그만 보고 커밋해', '음악 멈춰 있는지 확인해줘', '크롬 열어줘', '먼저 테스트 돌려', '멍청한 소리 하지 말고 배포해'])('정지 아님: %s', (t) => expect(isStopCommand(t)).toBe(false))
   it('자기 목소리 메아리 판정', () => {
     const spoken = '빌드가 완료되었습니다. 테스트 세 개가 실패했고 로그는 화면에 표시했습니다.'
     expect(isEchoOf('테스트 세 개가 실패했고', spoken)).toBe(true)

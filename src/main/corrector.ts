@@ -38,6 +38,8 @@ const SYSTEM = [
   '- (JARVIS: 사진 폴더만 있어요) "사진 발고 없어?" → "사진 말고 없어?"',
   '- (JARVIS: 슬랙을 열었어요) "슬랙 가자" → "슬랙 닫아" (방금 연 걸 또 열라는 말이 아니라 발음이 가장 가까운 "닫아")',
   '열기/닫기처럼 반대되는 명령은 발음으로 가린다 (방금 연 것을 또 열라는 말로 단정하지 않는다).',
+  '누가 하는지(내가/네가·니가)와 하지 말라는 말(~지 마, ~말라, 안 해)은 절대 바꾸거나 새로 넣지 않는다. "니가"는 "네가"(JARVIS 보고 하라는 말)다.',
+  '들리지 않은 내용(브랜치 이름, 대상, 조건)을 대화 맥락에서 지어내 넣지 않는다. 확실하지 않으면 받아 적은 그대로 둔다.',
   '',
   '출력: 바로잡은 문장 한 줄만. 따옴표, 설명, 접두어 금지.'
 ].join('\n')
@@ -67,7 +69,25 @@ export function acceptCorrection(raw: string, out: string, lastCommand?: string)
   const a = soundKey(raw)
   const b = soundKey(t)
   if (a.length >= 4 && b.length && 1 - editDistance(a, b) / Math.max(a.length, b.length) < 0.35) return raw
+  // 사용자 말의 뜻을 뒤집으면 버린다 — "…네가 직접 해"가 "…내가 직접 해"로 바뀐 일이 있었다
+  if (meaningFlipped(raw, t)) return raw
   return t
+}
+
+/** 누가 하는지(나/너), 하지 말라는 말이 바뀌었는지 */
+export function meaningFlipped(raw: string, fixed: string): boolean {
+  const who = (x: string): Set<string> => {
+    const s = new Set<string>()
+    if (/(^|\s)(내가|제가|나는|저는|내\s가)/.test(x)) s.add('me')
+    if (/(^|\s)(네가|니가|너가|너는|네\s가)/.test(x)) s.add('you')
+    return s
+  }
+  const wa = who(raw)
+  const wb = who(fixed)
+  for (const k of wb) if (!wa.has(k)) return true
+  for (const k of wa) if (!wb.has(k)) return true
+  const neg = (x: string): number => (x.match(/(지\s*마|지\s*말|말라|말아|않|안\s*해|안\s*돼|못\s*해)/g) ?? []).length
+  return neg(raw) !== neg(fixed)
 }
 
 export class SpeechCorrector {

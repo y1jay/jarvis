@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, shell, systemPreferences, Tray } from 'electron'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { AuditLog } from './audit'
 import { SettingsStore, type DeepPartial } from './settings'
 import { SecretStore, maskKey } from './secrets'
@@ -12,13 +12,14 @@ import { collectBrain, mergeBrain, type BrainBundle } from './brain'
 import { DialogContext } from './dialog'
 import { CORRECT_BELOW_LOGPROB, SpeechCorrector } from './corrector'
 import { enginesFor, TtsHub, voiceById, VOICE_CATALOG } from './tts'
-import { cer, MIN_SAMPLES, usableSamples, VoiceTrainer } from './learn'
+import { AUTO_LEARN, cer, MIN_SAMPLES, shouldAutoTrain, usableSamples, VoiceTrainer } from './learn'
 import { appWindows, mirrorClick, mirrorType, webAppUrl, windowBounds } from './mirror'
 import { ClaudeProvider } from './providers/claude'
 import { CodexProvider } from './providers/codex'
 import { GeminiProvider } from './providers/gemini'
 import type { AgentProvider } from './providers/types'
 import { oneShot, commitMessagePrompt } from './oneshot'
+import { isMostlyForeign, translatePrompt } from '../shared/lang'
 import { parseOpenIntent, pickProjectPrompt, ProjectFinder, resolveProject } from './projects'
 import { listApps, openApp, openUrl, parseQuitIntent, quitApp, resolveApp, resolveFolder, resolveSite, revealPath, type AppEntry } from './system'
 import { createJarvisTools, JARVIS_TOOL_NAMES } from './jarvisTools'
@@ -310,6 +311,26 @@ function sideModel(p: ProviderId): string | undefined {
   return p === 'claude' ? settings.get().fastModel || settings.model(p) : settings.model(p)
 }
 
+/** JARVIS 는 무조건 한국어로 말한다 — AI 답이 영어로 오면 빠른 모델로 한국어로 옮긴다 (실패하면 원문) */
+async function inKorean(text: string, ctx: { jobId?: string; sessionId?: string } = {}): Promise<string> {
+  if (!text || !isMostlyForeign(text)) return text
+  if (!(await authStatus('claude')).loggedIn) return text
+  const t0 = Date.now()
+  try {
+    const out = await Promise.race([
+      oneShot('claude', translatePrompt(text), workspaceDir(), auth.envFor('claude'), sideModel('claude')),
+      new Promise<string>((r) => setTimeout(() => r(''), 30_000))
+    ])
+    if (out && !isMostlyForeign(out)) {
+      audit.record({ action: 'agent.translate', provider: 'jarvis', detail: { ...ctx, from: text.slice(0, 2000), to: out.slice(0, 2000), ms: Date.now() - t0 } })
+      return out
+    }
+  } catch {
+    /* 원문 그대로 */
+  }
+  return text
+}
+
 function ask(p: ProviderId, prompt: string): Promise<string> {
   const mem = memoryText()
   return oneShot(p, mem ? `${mem}\n\n${prompt}` : prompt, workspaceDir(), auth.envFor(p), sideModel(p))
@@ -474,7 +495,7 @@ function buildOrchestrator(): Orchestrator {
     },
     onJob: (job) => emitJob(job),
     onEvent: (e) => {
-      if (e.event.kind === 'followup') deliverFollowup(e.sessionId, e.event.text)
+      if (e.event.kind === 'followup') void deliverFollowup(e.sessionId, e.event.text)
       const b = turnBuf.get(e.turnId)
       if (b) {
         const ev = e.event
@@ -484,6 +505,10 @@ function buildOrchestrator(): Orchestrator {
         else if (ev.kind === 'error') b.isError = true
       }
       send('agent:event', e satisfies AgentEventEnvelope)
+    },
+    onSteer: (e) => {
+      const sess = orch.get(e.sessionId)
+      audit.record({ action: 'agent.steer', provider: sess?.provider ?? 'claude', project: sess?.projectDir ?? undefined, detail: { prompt: e.prompt.slice(0, 2000), jobId: e.jobId, fromJobId: e.fromJobId } })
     },
     onTurnStart: (e) => {
       turnBuf.set(e.turnId, { sessionId: e.sessionId, prompt: e.prompt, text: '', isError: false, jobId: e.jobId })
@@ -691,32 +716,133 @@ async function restoreBrain(): Promise<string> {
   return `복원했습니다. ${parts.join('. ')}.`
 }
 
+/** 자동 학습용 기기 열쇠 — 처음에 만들고 맥 키체인(safeStorage)으로 잠가 둔다. 이 맥·이 계정에서만 열린다 */
+let deviceKeyCache: Buffer | null | undefined
+function deviceKey(): Buffer | null {
+  if (deviceKeyCache !== undefined) return deviceKeyCache
+  if (!safeStorage.isEncryptionAvailable()) return null
+  const f = join(app.getPath('userData'), '.voice', 'device.key')
+  try {
+    if (existsSync(f)) return (deviceKeyCache = Buffer.from(safeStorage.decryptString(readFileSync(f)), 'base64'))
+    const k = randomBytes(32)
+    mkdirSync(dirname(f), { recursive: true })
+    writeFileSync(f, safeStorage.encryptString(k.toString('base64')))
+    return (deviceKeyCache = k)
+  } catch {
+    return (deviceKeyCache = null)
+  }
+}
+
 let training = false
-/** 내 목소리 맞춤 학습: 모인 말소리 → 학습 → 비교 → 더 나을 때만 바꾸기 */
+/** 자동 학습 기록 (이 맥에만): 마지막으로 학습에 쓴 말소리 수, 결과 */
+interface AutoLearnState {
+  lastUsable: number
+  lastAt?: string
+  lastResult?: string
+  /** 기존 말소리를 합치려 암호를 물어봤는지 (한 번만 묻는다) */
+  askedImport?: boolean
+  /** 마지막 실패 시각 (1시간 뒤 다시 시도) */
+  failedAt?: string
+}
+let lastActivity = Date.now()
+function autoState(): AutoLearnState {
+  try {
+    return JSON.parse(readFileSync(join(app.getPath('userData'), '.voice', 'auto.json'), 'utf8')) as AutoLearnState
+  } catch {
+    return { lastUsable: 0 }
+  }
+}
+function saveAutoState(st: AutoLearnState): void {
+  mkdirSync(join(app.getPath('userData'), '.voice'), { recursive: true })
+  writeFileSync(join(app.getPath('userData'), '.voice', 'auto.json'), JSON.stringify(st, null, 2))
+}
+
+/** 학습 과정 기록 (말소리·문장 내용은 쓰지 않는다 — 단계와 시간만) */
+function learnLog(line: string): void {
+  try {
+    const f = join(app.getPath('userData'), 'learn', 'train.log')
+    mkdirSync(dirname(f), { recursive: true })
+    appendFileSync(f, `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    /* 기록 실패는 무시 */
+  }
+}
+
+/** 학습 결과 기록 — 실패했으면 '학습함'으로 치지 않고 1시간 뒤 다시 시도한다 */
+function saveAfterTraining(usable: number, msg: string): void {
+  const failed = msg.startsWith('학습 중 문제가')
+  const st = autoState()
+  saveAutoState(failed ? { ...st, lastResult: msg, failedAt: new Date().toISOString() } : { ...st, lastUsable: usable, lastAt: new Date().toISOString(), lastResult: msg, failedAt: undefined })
+}
+
+/** 켜져 있는 동안 10분마다: 조건이 맞으면 스스로 학습 (말로 시키지 않아도) */
+function autoLearnTick(): void {
+  try {
+    const st = autoState()
+    const busy = orch.list().some((x) => x.status === 'running') || asker.list().length > 0
+    if (!settings.get().voice.learning || training || busy) return
+    const usable = usableSamples(vault.readLocal())
+    const sinceFail = st.failedAt ? Date.now() - Date.parse(st.failedAt) : Infinity
+    const go = sinceFail > 60 * 60_000 && shouldAutoTrain({ learning: true, training, busy, idleMs: Date.now() - lastActivity, onBattery: powerMonitor.isOnBatteryPower(), usable: usable.length, lastUsable: st.lastUsable })
+    if (!go) return
+    void runTraining(usable, true).then((msg) => saveAfterTraining(usable.length, msg))
+  } catch (e) {
+    console.warn('[learn] 자동 학습 확인 실패', (e as Error).message)
+  }
+}
+
+/** 암호로만 잠긴 예전 말소리가 있으면 한 번만 암호를 받아 학습용 사본에 합친다 */
+async function offerImport(): Promise<void> {
+  const st = autoState()
+  if (st.askedImport || !vault.ready) return
+  const missing = vault.missingLocal()
+  if (!missing) return
+  saveAutoState({ ...st, askedImport: true })
+  const pass = await askUser(`예전에 모은 말소리 ${missing}개를 자동 학습에 합치려면 음성 학습 암호가 한 번 필요해요. 입력해 주세요. (취소하면 지금부터 모으는 말소리로만 배웁니다)`, { kind: 'secret', from: 'JARVIS' })
+  if (!pass) return
+  try {
+    const n = vault.importToLocal(pass)
+    audit.record({ action: 'voice.vault.restore', provider: 'jarvis', detail: { importedToLocal: n, via: 'auto-learn' } })
+    send('jarvis:speak', `말소리 ${n}개를 자동 학습에 합쳤어요.`)
+  } catch {
+    send('jarvis:speak', '암호가 맞지 않아 예전 말소리는 합치지 않았어요. 지금부터 모으는 말소리로 배울게요.')
+  }
+}
+
+/** "목소리 학습해줘" — 지금 바로 (자동 학습과 같은 과정, 쉬는 조건만 건너뜀) */
 async function trainVoice(): Promise<string> {
   if (training) return '이미 학습 중이에요. 끝나면 알려 드릴게요.'
-  if (!vault.ready) return '먼저 "음성 학습 암호 정해줘"로 암호를 정해 주세요. 그때부터 말소리가 모이고, 모인 말소리로 학습합니다.'
-  const pass = await askUser('저장된 말소리를 열려면 음성 학습 암호가 필요해요. 입력해 주세요.', { kind: 'secret', from: 'JARVIS' })
-  if (!pass) return '학습을 취소했습니다.'
-  let all
-  try {
-    all = vault.readAll(pass)
-  } catch {
-    return '암호가 맞지 않아 학습하지 않았습니다.'
+  if (vault.missingLocal() && vault.ready) {
+    const pass = await askUser('예전에 모은 말소리까지 쓰려면 음성 학습 암호가 필요해요. 입력해 주세요. (취소하면 학습용 사본만 씁니다)', { kind: 'secret', from: 'JARVIS' })
+    if (pass) {
+      try {
+        vault.importToLocal(pass)
+      } catch {
+        return '암호가 맞지 않아 학습하지 않았습니다.'
+      }
+    }
   }
+  const all = vault.readLocal()
   const items = usableSamples(all)
-  if (items.length < MIN_SAMPLES) return `학습에 쓸 수 있는 말소리가 ${items.length}개예요. 최소 ${MIN_SAMPLES}개가 필요하고, 200~300개면 확실히 좋아집니다. (모은 말소리 ${all.length}개 중 정답이 믿을 만한 것만 씁니다) 조금 더 대화한 뒤 다시 말씀해 주세요.`
-  if (!trainer.installed) {
-    const r = await requestApproval({ kind: 'tool', provider: 'jarvis', title: '내 목소리 학습 도구를 설치할까요? (약 1GB, 처음 한 번)', detail: '이 맥에서만 도는 학습 도구(PyTorch, Transformers)와 기본 모델(약 1.6GB)을 JARVIS 폴더에 받습니다. 학습 중 메모리는 약 5GB 이하로 제한합니다.' }, null)
-    if (!r.approved) return '설치하지 않아 학습하지 않았습니다.'
-  }
+  if (items.length < MIN_SAMPLES) return `학습에 쓸 수 있는 말소리가 ${items.length}개예요. 최소 ${MIN_SAMPLES}개가 필요하고, 200~300개면 확실히 좋아집니다. (모은 말소리 ${all.length}개 중 정답이 믿을 만한 것만 씁니다) 조금 더 대화하시면 모이는 대로 스스로 학습합니다.`
+  const msg = await runTraining(items, false)
+  saveAfterTraining(items.length, msg)
+  return msg
+}
+
+/** 학습 → 비교 → 더 나을 때만 바꾸기. auto 면 조용히 하고 결과만 알린다 */
+async function runTraining(items: ReturnType<typeof usableSamples>, auto: boolean): Promise<string> {
+  if (training) return '이미 학습 중이에요.'
   training = true
   const t0 = Date.now()
   try {
+    learnLog(`학습 시작 (${auto ? '자동' : '요청'}) 말소리 ${items.length}개`)
     await trainer.install()
+    learnLog('학습 도구 준비됨')
     const { dataDir, train, evalItems } = trainer.prepare(items)
-    send('jarvis:speak', `말소리 ${train}개로 학습을 시작할게요. 끝나면 알려 드릴게요.`)
+    if (!auto) send('jarvis:speak', `말소리 ${train}개로 학습을 시작할게요. 끝나면 알려 드릴게요.`)
     const model = await trainer.train(dataDir, 3)
+    learnLog(`학습 끝 ${Math.round((Date.now() - t0) / 1000)}초`)
     // 비교: 학습에 안 쓴 말소리로 지금 모델 vs 새 모델
     send('tts:state', { engine: 'learn', state: 'installing', message: '지금 모델과 새 모델을 비교하는 중' })
     const pcms = await trainer.decode(evalItems.map((x) => x.audio))
@@ -728,32 +854,55 @@ async function trainVoice(): Promise<string> {
     symlinkSync(join(app.getPath('userData'), 'models', curFile), join(md, curFile))
     symlinkSync(model, join(md, MODELS.personal.file))
     const score = async (key: string): Promise<number> => {
-      const s2 = new NativeStt({ binary: sttBinaryPath(app.getAppPath(), process.resourcesPath, app.isPackaged), modelsDir: md, modelKey: () => key, onState: () => undefined })
-      if (!(await s2.start())) throw new Error('비교용 음성 엔진을 띄우지 못했습니다')
+      let why = ''
+      const t1 = Date.now()
+      const make = (): NativeStt => new NativeStt({ binary: sttBinaryPath(app.getAppPath(), process.resourcesPath, app.isPackaged), modelsDir: md, modelKey: () => key, onState: (st) => st.message && (why = st.message) })
+      let s2 = make()
+      // 한 번 실패하면 잠깐 쉬었다가 다시 (앞 엔진이 아직 내려가는 중일 수 있다)
+      if (!(await s2.start())) {
+        learnLog(`비교 엔진(${key}) 시작 실패, 다시 시도: ${why}`)
+        await new Promise((r) => setTimeout(r, 3000))
+        s2 = make()
+        if (!(await s2.start())) throw new Error(`비교용 음성 엔진(${key})을 띄우지 못했습니다${why ? `: ${why}` : ''}`)
+      }
+      learnLog(`비교 엔진(${key}) 준비 ${Date.now() - t1}ms`)
       let err = 0
-      for (let i = 0; i < evalItems.length; i++) err += cer(evalItems[i].text, await s2.transcribe(pcms[i]))
-      s2.stop()
+      try {
+        for (let i = 0; i < evalItems.length; i++) {
+          // 한 문장에 45초가 넘으면 못 알아들은 것으로 친다 (엔진이 멈춰서 학습 전체가 걸리지 않게)
+          const out = await Promise.race([s2.transcribe(pcms[i]), new Promise<string>((r) => setTimeout(() => r(''), 45_000))])
+          err += Math.min(1, cer(evalItems[i].text, out)) // 한 문장은 최대 100% 틀림 (짧은 말을 길게 잘못 적으면 100%를 넘는다)
+        }
+      } finally {
+        s2.stop()
+      }
+      learnLog(`비교(${key}) ${evalItems.length}문장 ${((Date.now() - t1) / 1000).toFixed(1)}초, 정확도 ${((1 - err / evalItems.length) * 100).toFixed(1)}%`)
       return 1 - err / evalItems.length
     }
     const before = await score(cur in MODELS ? cur : defaultModelKey())
-    const after = await score('personal')
+    const after = await score('personal').finally(() => rmSync(md, { recursive: true, force: true }))
     const better = after > before + 0.01
     if (better) {
       trainer.adopt(model, join(app.getPath('userData'), 'models'))
       send('settings:changed', settings.update({ voice: { nativeModel: 'personal' } }))
       void stt.restart()
     }
-    audit.record({ action: 'voice.train', provider: 'jarvis', detail: { samples: items.length, train, eval: evalItems.length, before: Math.round(before * 1000) / 10, after: Math.round(after * 1000) / 10, adopted: better, seconds: Math.round((Date.now() - t0) / 1000) } })
+    audit.record({ action: 'voice.train', provider: 'jarvis', detail: { samples: items.length, train, eval: evalItems.length, before: Math.round(before * 1000) / 10, after: Math.round(after * 1000) / 10, adopted: better, seconds: Math.round((Date.now() - t0) / 1000), auto } })
     send('tts:state', { engine: 'learn', state: 'ready' })
+    // 자동 학습은 좋아졌을 때만 말로 알린다
+    if (auto && better) send('jarvis:speak', `쉬는 동안 목소리를 학습했어요. 알아듣기가 ${(before * 100).toFixed(0)}%에서 ${(after * 100).toFixed(0)}%로 좋아져서 새 모델로 바꿨습니다.`)
     return better
       ? `학습을 마쳤어요. 학습에 안 쓴 말소리로 비교해 보니 알아듣기가 ${(before * 100).toFixed(1)}%에서 ${(after * 100).toFixed(1)}%로 좋아져서, 새 모델로 바꿨습니다.`
       : `학습은 했지만 비교해 보니 ${(before * 100).toFixed(1)}% → ${(after * 100).toFixed(1)}%로 나아지지 않아서, 지금 모델을 그대로 씁니다. 말소리가 더 모이면 다시 해 볼게요.`
   } catch (e) {
-    audit.record({ action: 'voice.train', provider: 'jarvis', detail: { samples: items.length, error: (e as Error).message.slice(0, 300) } })
+    learnLog(`실패: ${(e as Error).message}`)
+    audit.record({ action: 'voice.train', provider: 'jarvis', detail: { samples: items.length, error: (e as Error).message.slice(0, 300), auto } })
     send('tts:state', { engine: 'learn', state: 'error', message: `학습 실패: ${(e as Error).message.slice(0, 120)}` })
     return `학습 중 문제가 생겼어요: ${(e as Error).message.slice(0, 200)}`
   } finally {
     training = false
+    // 학습 때 꺼내 둔 말소리·문장(잠기지 않은 사본)은 바로 지운다
+    trainer.cleanup()
   }
 }
 
@@ -764,7 +913,12 @@ async function handleVoiceLearn(action: 'setup' | 'status' | 'backup' | 'clear' 
     const st = vault.stats()
     const words = speechLex.topWords(8)
     return [
-      st.ready ? `말소리 샘플 ${st.samples}개 (${mb(st.bytes)} / 최대 ${mb(st.limitBytes)}) — 내 암호로 잠겨 있습니다.` : '말소리 샘플은 아직 저장하지 않고 있어요. "음성 학습 암호 정해줘"라고 하시면 시작합니다.',
+      `자동 학습용 말소리 ${st.local ?? 0}개 (이 맥 키체인으로 잠김, git 에는 안 올라감). 쉬는 동안 스스로 학습합니다.`,
+      st.ready ? `git 백업용 말소리 ${st.samples}개 (${mb(st.bytes)} / 최대 ${mb(st.limitBytes)}) — 내 암호로만 열립니다.` : 'git 백업용 보관함은 아직 없어요. "음성 학습 암호 정해줘"라고 하시면 암호로 잠가 백업할 수 있습니다.',
+      (() => {
+        const a = autoState()
+        return a.lastAt ? `마지막 학습: ${new Date(a.lastAt).toLocaleString('ko-KR')} — ${a.lastResult ?? ''}` : `아직 학습 전이에요. 쓸 만한 말소리가 ${MIN_SAMPLES}개 모이면 쉬는 동안 스스로 학습합니다.`
+      })(),
       `바로잡은 말 ${Object.keys(speechLex.data.fixes).length}개, 배운 단어 ${Object.keys(speechLex.data.words).length}개.`,
       words.length ? `자주 쓰시는 말: ${words.join(', ')}` : ''
     ]
@@ -1176,7 +1330,8 @@ async function openAppInJarvis(query: string, app: AppEntry | null, via: string)
 }
 
 /** 뒤에서 하던 작업을 마치고 AI 가 낸 완료 보고 → 대화창에 JARVIS 메시지로, 말로도 알린다 */
-function deliverFollowup(sessionId: string, text: string): void {
+async function deliverFollowup(sessionId: string, original: string): Promise<void> {
+  const text = await inKorean(original, { sessionId })
   const sess = orch.list().find((x) => x.id === sessionId)
   const job: JobInfo = { id: randomUUID(), prompt: `(${sess?.title ?? '작업'} — 뒤에서 하던 작업 완료)`, status: 'done', tasks: [], notes: [], via: 'voice', createdAt: Date.now(), answer: text }
   emitJob(job)
@@ -1234,6 +1389,7 @@ let lastVoiceJob: { job: JobInfo; at: number } | null = null
 
 /** 요청 하나를 작업(Job)으로 시작 — 화면/음성 입력, 그리고 질문 도중 다른 요청을 하신 경우 */
 function startJob(prompt: string, via: 'voice' | 'text' = 'text'): { jobId: string } {
+  lastActivity = Date.now()
   // 말을 잠깐 쉬었다가 이어서 한 경우: 아직 처리 중인 앞 요청을 멈추고 둘을 합쳐서 다시
   const prev = lastVoiceJob
   if (via === 'voice' && prev && Date.now() - prev.at < 15_000 && ['planning', 'running'].includes(prev.job.status) && isContinuation(prompt)) {
@@ -1261,6 +1417,13 @@ function startJob(prompt: string, via: 'voice' | 'text' = 'text'): { jobId: stri
     emitJob(job)
     void handleRequest(job)
       .catch((e: Error) => finishJob(job, `처리 중 오류가 발생했습니다: ${e.message}`, 'error'))
+      .then(async () => {
+        // 답이 영어로 왔으면 말하기 전에 한국어로
+        if (job.answer && isMostlyForeign(job.answer)) {
+          job.answer = await inKorean(job.answer, { jobId: job.id })
+          emitJob(job)
+        }
+      })
       .finally(() => {
         if (job.status !== 'done' && job.status !== 'error') finishJob(job, job.answer ?? '', 'done')
         convo.record(jobToRecord(job, settings.get().provider, via))
@@ -1354,7 +1517,7 @@ function registerIpc(): void {
     const s = orch.get(id)
     if (!s) throw new Error('세션이 없습니다.')
     audit.record({ action: 'agent.prompt', provider: s.provider, project: s.projectDir, detail: { prompt: prompt.slice(0, 2000), sessionId: id, direct: true } })
-    void orch.runInSession(id, prompt)
+    void orch.runInSession(id, prompt, `chat:${randomUUID()}`, { preempt: true })
     return { ok: true }
   })
   h('session:interrupt', async (id: string) => {
@@ -1482,7 +1645,8 @@ function registerIpc(): void {
     return next
   })
   h('stt:sample', (x: { heard: string; packets: ArrayBuffer[]; sampleRate: number; device?: string }) => {
-    if (!settings.get().voice.learning || !vault.ready) return
+    lastActivity = Date.now()
+    if (!settings.get().voice.learning || !vault.collecting) return
     // 인증번호·비밀번호를 묻는 중엔 말소리를 절대 저장하지 않는다
     if (asker.list().some((q) => q.kind === 'secret' || q.kind === 'code')) return
     holdSample({ ts: Date.now(), heard: x.heard, logprob: lastHeard && lastHeard.text === x.heard ? lastHeard.logprob : undefined, packets: x.packets.map((b) => new Uint8Array(b)), sampleRate: x.sampleRate, device: x.device })
@@ -1665,7 +1829,7 @@ app.whenReady().then(() => {
   gitSvc = new GitService(async (req) => (await requestApproval({ ...req, provider: 'jarvis' }, cwd())).approved)
   convo = new ConversationLog(join(ud, 'memory', 'conversations.jsonl'))
   // 음성 학습 — 숨김 폴더(.voice). 말소리는 사용자 암호(공개키)로, 말투는 키체인으로 잠근다
-  vault = new VoiceVault(join(ud, '.voice'), () => Math.max(20, settings.get().voice.learnLimitMB) * 1024 * 1024)
+  vault = new VoiceVault(join(ud, '.voice'), () => Math.max(20, settings.get().voice.learnLimitMB) * 1024 * 1024, deviceKey)
   speechLex = new SpeechLexicon(join(ud, '.voice', 'lexicon.bin'), {
     encrypt: (x) => safeStorage.encryptString(x),
     decrypt: (b) => safeStorage.decryptString(b),
@@ -1723,6 +1887,11 @@ app.whenReady().then(() => {
   powerMonitor.on('unlock-screen', () => send('voice:restart', { reason: 'unlock' }))
   // 프로젝트 후보 스캔을 미리 해 둔다 (첫 "열어줘" 응답 지연 방지)
   setTimeout(() => finder.list(), 4000)
+  // 학습은 켜는 순간부터: 쉬는 동안 스스로 내 목소리를 학습한다 (10분마다 확인)
+  setInterval(autoLearnTick, AUTO_LEARN.checkMs)
+  setTimeout(autoLearnTick, 2 * 60_000)
+  // 예전에 암호로만 모은 말소리가 있으면 한 번만 암호를 받아 합친다
+  setTimeout(() => void offerImport(), 15_000)
 
   globalShortcut.register('CommandOrControl+Shift+J', () => {
     showWindow()

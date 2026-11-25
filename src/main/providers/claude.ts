@@ -1,6 +1,7 @@
 // Claude: Claude Agent SDK (= Claude Code 엔진). 파일 읽기/수정, Bash, git, CLAUDE.md, 세션 유지까지 Claude Code 와 동일.
 // git commit / push / 파괴적 명령은 PreToolUse 훅에서 강제로 사용자 승인을 받는다
 // (훅은 사용자 settings 의 allow 규칙보다 먼저 실행되므로 우회 불가).
+import { KOREAN_REMINDER } from '../../shared/lang'
 import { query, type Query, type SDKMessage, type SDKUserMessage, type HookCallback, type CanUseTool } from '@anthropic-ai/claude-agent-sdk'
 import { claudeBinary } from '../cli'
 import { classifyCommand, extractFilePaths, FILE_MUTATING_TOOLS } from '../policy'
@@ -8,9 +9,12 @@ import type { AgentProvider, TurnContext } from './types'
 
 const JARVIS_APPEND = [
   '당신은 J.A.R.V.I.S. — 사용자의 데스크톱 AI 비서다. 한국어로, 정중하고 간결하게("~입니다", "알겠습니다") 답한다.',
+  '언어 규칙(최우선): 모든 답변·보고·질문·완료 보고는 반드시 한국어로 쓴다. 도구 결과나 프로젝트 문서가 영어여도, 작업이 길어져도 영어로 답하지 않는다. 코드·경로·명령만 원문.',
+  '사용자의 말이 1순위다: 지금 한 말을 그대로 따른다. JARVIS 가 덧붙인 참고·지시나 앞선 계획보다 사용자의 최신 말이 우선이다. 사용자가 하지 말라고 한 것은 하지 않는다.',
   '음성 인터페이스로도 쓰이므로 최종 답변의 첫 문장은 귀로 들어도 이해되는 짧은 요약으로 시작한다.',
   'git commit / git push 는 JARVIS 가 사용자에게 확인을 받은 뒤에만 실행된다. 거부되면 다시 시도하지 말고 사용자 지시를 기다린다.',
-  '앱/웹사이트/폴더 열기·닫기, 스크린샷, 클립보드, 알림, 프로젝트 전환은 mcp__jarvis__* 도구를 사용한다.'
+  '앱/웹사이트/폴더 열기·닫기, 스크린샷, 클립보드, 알림, 프로젝트 전환은 mcp__jarvis__* 도구를 사용한다.',
+  '아이폰 시뮬레이터·안드로이드 에뮬레이터는 mcp__jarvis__device_* 도구로만 켜고 본다. open -a Simulator 처럼 바깥에 창을 띄우지 않는다 (화면은 JARVIS 안에서만).'
 ].join('\n')
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -260,7 +264,9 @@ export class ClaudeProvider implements AgentProvider {
       }
       case 'result': {
         const isError = m.subtype !== 'success'
-        const text = m.subtype === 'success' ? m.result : (m.errors ?? []).join('\n') || m.subtype
+        const raw = m.subtype === 'success' ? m.result : (m.errors ?? []).join('\n') || m.subtype
+        // 내부 진단 문구(영어)를 그대로 말하지 않는다 ("[ede_diagnostic] result_type=user …" 가 답으로 나간 일이 있었다)
+        const text = isError && /^\s*(\[ede_diagnostic\]|error_during_execution|error_max_turns)/.test(raw ?? '') ? '작업이 중간에 끊겼습니다. 다시 말씀해 주시면 이어서 하겠습니다.' : raw
         // 사용자가 보낸 차례가 아닌데 결과가 왔다 = 뒤에서 하던 작업을 마치고 AI 가 낸 완료 보고
         if (!this.turnDone) {
           if (text?.trim() && !isError) ctx.emit({ kind: 'followup', text })
@@ -275,10 +281,18 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
+  /** 차례가 도는 중이면 사용자 말을 바로 넣는다 — Claude 는 지금 쓰는 도구가 끝나는 즉시 이 말을 보고 반영한다 (작업은 끊지 않음) */
+  steer(prompt: string): boolean {
+    const live = this.live
+    if (!live || !this.turnDone) return false
+    live.input.push({ type: 'user', message: { role: 'user', content: `${prompt}\n\n${KOREAN_REMINDER}` }, parent_tool_use_id: null } as SDKUserMessage)
+    return true
+  }
+
   send(prompt: string, ctx: TurnContext): Promise<void> {
     this.ctx = ctx
     const live = this.ensure(ctx)
-    const content = withMemoryUpdate(prompt, live.memory, ctx.memory ?? '')
+    const content = `${withMemoryUpdate(prompt, live.memory, ctx.memory ?? '')}\n\n${KOREAN_REMINDER}`
     live.memory = ctx.memory ?? ''
     return new Promise<void>((resolve) => {
       this.turnDone = resolve

@@ -170,10 +170,15 @@ export type ApprovalVoice = 'approve' | 'deny' | null
 export { ruleApproval as matchApproval } from '../../../shared/approval'
 
 /** "멈춰", "그만해", "작업 중지" 같은 순수 정지 명령인지 (다른 요청이 섞이면 아님) */
-const STOP_COMMAND = /^(다|일단|잠깐|잠깐만|지금|하던거|작업|전부|모두)?(멈춰|멈춰줘|멈춰봐|멈추세요|멈춰주세요|그만|그만해|그만해줘|그만둬|그만하세요|중지|중지해|중지해줘|중단|중단해|중단해줘|스톱|스탑|stop)(요|해요)?$/i
+const STOP_COMMAND = /^(다|일단|잠깐|잠깐만|지금|하던거|작업|전부|모두|야|아니)?(멈춰|멈춰줘|멈춰봐|멈춰라|멈추세요|멈춰주세요|멈추라고|멈추라니까|멈추라고요|그만|그만해|그만해줘|그만둬|그만하세요|그만하라고|그만하라니까|그만그만|중지|중지해|중지해줘|중단|중단해|중단해줘|스톱|스탑|스톱해|stop)(요|해요)?$/i
+/** 음성 인식기가 "멈춰"를 잘못 받아 적는 말 (실제: "멈춰" → "멍청") — 이 말만 단독으로 들리면 정지 */
+const STOP_MISHEARD = /^(멍청|멈처|멈쳐|멍춰|멈추어|멈춰여)$/
+/** 따지면서 멈추라고 하는 말 ("멈추라는데 뭐가 잠깐만이야", "그만하라니까 왜 계속해") — 앞머리만 보고 정지 */
+const STOP_LEAD = /^(멈추라는데|멈추라니까|멈추라고|멈추라고했|그만하라는데|그만하라니까|그만하라고|그만하라고했|그만좀해|멈춰좀)/
 
 export function isStopCommand(t: string): boolean {
-  return STOP_COMMAND.test(normalize(t))
+  const n = normalize(t)
+  return STOP_COMMAND.test(n) || STOP_MISHEARD.test(n) || STOP_LEAD.test(n)
 }
 
 function bigrams(s: string): Set<string> {

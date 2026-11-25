@@ -3,6 +3,7 @@
 //  2) 이 컴퓨터에서 Whisper 에 작은 덧붙임 학습(LoRA) — 메모리 상한을 걸고 (학습 스크립트가 약 11GB 넘으면 멈춤)
 //  3) whisper.cpp 형식으로 변환
 //  4) 학습에 안 쓴 말소리로 지금 모델과 새 모델을 비교 → 실제로 더 잘 알아들을 때만 바꾼다
+import { meaningFlipped } from './corrector'
 import { spawn } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -10,6 +11,16 @@ import { findPythonTool } from './tts'
 import type { VoiceSample } from './voicevault'
 
 export const MIN_SAMPLES = 40
+/** 자동 학습: 10분마다 확인, 5분 이상 쉬고 있을 때만, 첫 학습 뒤엔 쓸 만한 말소리가 60개 더 모일 때마다 */
+export const AUTO_LEARN = { checkMs: 10 * 60_000, idleMs: 5 * 60_000, growth: 60 }
+
+/** 자동 학습을 지금 해도 되는지 — 쉬고 있고(작업·대화 없음), 전원에 연결돼 있고, 새 말소리가 충분히 모였을 때 */
+export function shouldAutoTrain(x: { learning: boolean; training: boolean; busy: boolean; idleMs: number; onBattery: boolean; usable: number; lastUsable: number }): boolean {
+  if (!x.learning || x.training || x.busy || x.onBattery) return false
+  if (x.idleMs < AUTO_LEARN.idleMs) return false
+  if (x.usable < MIN_SAMPLES) return false
+  return x.lastUsable === 0 || x.usable - x.lastUsable >= AUTO_LEARN.growth
+}
 export const PACKAGES = ['torch', 'transformers', 'peft', 'accelerate', 'soundfile', 'librosa', 'openai-whisper', 'safetensors', 'huggingface_hub']
 
 /** 학습에 쓸 수 있는 샘플: 바로잡은 말, 또는 엔진이 확신한 말 (틀렸을 수 있는 말로 배우면 틀린 걸 더 굳힌다) */
@@ -17,6 +28,8 @@ export function usableSamples(all: VoiceSample[]): Array<{ s: VoiceSample; text:
   return all
     .map((s) => ({ s, text: (s.corrected ? s.final : s.heard)?.trim() ?? '' }))
     .filter(({ s, text }) => text.length >= 2 && s.packets.length > 10 && (s.corrected || (s.logprob !== undefined && s.logprob > -0.1)))
+    // 교정기가 뜻을 뒤집은 정답("…네가 직접 해" → "…내가 직접 해")은 배우지 않는다
+    .filter(({ s }) => !(s.corrected && s.final && meaningFlipped(s.heard, s.final)))
 }
 
 /** 학습용/평가용 나누기 — 평가용은 학습에 쓰지 않는다 (15%, 최소 5개) */
@@ -220,6 +233,11 @@ export class VoiceTrainer {
       const b = readFileSync(join(tmp, `${i}.f32`))
       return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength))
     })
+  }
+
+  /** 학습 때 꺼내 둔 말소리·문장(잠기지 않은 사본)을 지운다 — 학습이 끝나면 항상 */
+  cleanup(): void {
+    for (const d of ['data', 'eval-pcm']) rmSync(join(this.dir, d), { recursive: true, force: true })
   }
 
   /** 새 모델을 맞춤 모델 자리로 */

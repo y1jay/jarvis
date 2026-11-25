@@ -18,6 +18,8 @@ export interface OrchestratorDeps {
   onEvent: (e: { turnId: string; sessionId: string; provider: ProviderId; event: AgentEvent }) => void
   onTurnStart: (e: { turnId: string; sessionId: string; provider: ProviderId; prompt: string; jobId?: string }) => void
   onTurnDone: (e: { turnId: string; sessionId: string; provider: ProviderId }) => void
+  /** 작업 도중 사용자의 새 말을 지금 차례에 끼워 넣었다 */
+  onSteer?: (e: { sessionId: string; jobId?: string; fromJobId?: string; prompt: string }) => void
   onSessionOpen?: (s: SessionInfo) => void
   onSessionClose?: (s: SessionInfo) => void
 }
@@ -28,6 +30,27 @@ interface SessionRec {
   chain: Promise<unknown>
   /** 뒤 작업이 끝나고 AI 의 완료 보고를 기다리는 중 */
   awaitingReport?: ReturnType<typeof setTimeout> | null
+  /** 지금 돌고 있는 차례 (작업 도중 사용자가 새로 말하면 여기에 끼워 넣는다) */
+  active?: { turnId: string; jobId?: string; done: Promise<TurnResult> } | null
+  /** 답을 말하지 않고 조용히 끝낼 작업 (새 말에 자리를 넘겼거나 사용자가 멈춘 작업) */
+  silenced?: Map<string, 'steer' | 'stop'>
+}
+
+export interface TurnResult {
+  text: string
+  isError: boolean
+  /** 사용자의 새 말에 자리를 넘기거나 멈춰서 조용히 끝난 차례 */
+  silenced?: 'steer' | 'stop'
+}
+
+/** 작업 도중 들어온 사용자의 새 말 — 하던 작업을 끊지 않고 바로 보게 한다 */
+export function steerPrompt(prompt: string): string {
+  return [
+    '[사용자가 작업 도중 새로 한 말 — 이 말이 1순위다]',
+    prompt,
+    '',
+    '(이 말을 바로 반영하라. 멈추라는 뜻이면 멈추고, 하던 작업을 바꾸라는 뜻이면 바꿔라. 하던 작업과 관계없는 말이면 먼저 답하고 하던 작업을 마저 끝내라. 마지막 답에는 이 말에 대한 답이 꼭 들어가야 한다.)'
+  ].join('\n')
 }
 
 export interface PlannedTask {
@@ -205,9 +228,11 @@ export class Orchestrator {
 
   /** 실행 중이던 세션 수를 돌려준다 */
   async interruptAll(): Promise<number> {
-    const running = [...this.sessions.values()].filter((s) => s.info.status === 'running').length
-    await Promise.all([...this.sessions.values()].filter((s) => s.info.status === 'running').map((s) => s.provider.interrupt().catch(() => undefined)))
-    return running
+    const list = [...this.sessions.values()].filter((s) => s.info.status === 'running')
+    // 사용자가 멈춘 작업은 '끊겼습니다' 같은 답을 따로 말하지 않는다
+    for (const s of list) if (s.active?.jobId) (s.silenced ??= new Map()).set(s.active.jobId, 'stop')
+    await Promise.all(list.map((s) => s.provider.interrupt().catch(() => undefined)))
+    return list.length
   }
 
   /** (AI, 프로젝트) 세션 재사용 — 포커스된 것 우선, 없으면 새로 */
@@ -225,11 +250,24 @@ export class Orchestrator {
   }
 
   /** 세션에서 한 턴 실행. 같은 세션의 턴은 순서대로(직렬), 다른 세션끼리는 동시에. */
-  runInSession(sessionId: string, prompt: string, jobId?: string): Promise<{ text: string; isError: boolean }> {
+  runInSession(sessionId: string, prompt: string, jobId?: string, opts: { preempt?: boolean } = {}): Promise<TurnResult> {
     const rec = this.sessions.get(sessionId)
     if (!rec) return Promise.resolve({ text: '세션이 닫혔습니다.', isError: true })
-    const run = async (): Promise<{ text: string; isError: boolean }> => {
+    // 사용자의 새 말은 앞 작업이 끝날 때까지 줄 서지 않는다 — 하던 작업을 끊지 않고 지금 차례에 바로 끼워 넣는다.
+    // 앞 작업의 답은 조용히 넘기고, 합쳐진 마지막 답을 새 말의 답으로 한 번만 말한다.
+    const cur = rec.active
+    if (opts.preempt && cur && cur.jobId !== jobId && rec.provider.steer?.(steerPrompt(prompt))) {
+      if (cur.jobId) (rec.silenced ??= new Map()).set(cur.jobId, 'steer')
+      const from = cur.jobId
+      cur.jobId = jobId
+      this.d.onEvent({ turnId: cur.turnId, sessionId, provider: rec.info.provider, event: { kind: 'status', message: `🎙 하던 작업에 새 말씀을 바로 전했습니다: ${prompt.slice(0, 200)}` } })
+      this.d.onSteer?.({ sessionId, jobId, fromJobId: from, prompt })
+      return cur.done.then((r) => ({ text: r.text, isError: r.isError }))
+    }
+    const run = async (): Promise<TurnResult> => {
       const turnId = randomUUID()
+      let settle: (r: TurnResult) => void = () => undefined
+      rec.active = { turnId, jobId, done: new Promise<TurnResult>((r) => (settle = r)) }
       const info = rec.info
       info.status = 'running'
       info.lastActive = Date.now()
@@ -295,7 +333,15 @@ export class Orchestrator {
         this.d.onTurnDone({ turnId, sessionId, provider: info.provider })
       }
       const text = resultText || lastText || streamed || errors.join('\n')
-      return { text, isError }
+      const result: TurnResult = { text, isError }
+      rec.active = null
+      settle(result)
+      const quiet = jobId ? rec.silenced?.get(jobId) : undefined
+      if (jobId && quiet) {
+        rec.silenced!.delete(jobId)
+        return { text: '', isError: false, silenced: quiet }
+      }
+      return result
     }
     const next = rec.chain.then(run, run)
     rec.chain = next.catch(() => undefined)
@@ -341,7 +387,7 @@ export class Orchestrator {
     this.d.onJob(structuredClone(job))
 
     // 의존성 순서대로 실행 (독립 작업은 동시에)
-    const results: Array<Promise<{ text: string; isError: boolean }>> = []
+    const results: Array<Promise<TurnResult>> = []
     plan.forEach((t, i) => {
       results[i] = (async () => {
         const deps = await Promise.all(t.after.map((a) => results[a]))
@@ -352,7 +398,7 @@ export class Orchestrator {
         }
         task.status = 'running'
         this.d.onJob(structuredClone(job))
-        const r = await this.runInSession(task.sessionId, instruction, job.id)
+        const r = await this.runInSession(task.sessionId, instruction, job.id, { preempt: true })
         task.status = r.isError ? 'error' : 'done'
         task.result = r.text
         this.d.onJob(structuredClone(job))
@@ -361,6 +407,15 @@ export class Orchestrator {
     })
     const done = await Promise.all(results)
 
+    // 새 말씀에 자리를 넘겼거나 멈춘 작업 — 답을 따로 말하지 않는다
+    const quiet = done.find((r) => r.silenced)?.silenced
+    if (quiet) {
+      job.answer = ''
+      job.notes.push(quiet === 'stop' ? '말씀대로 멈췄습니다' : '새 말씀을 먼저 반영했습니다')
+      job.status = 'done'
+      this.d.onJob(structuredClone(job))
+      return job
+    }
     if (done.length === 1) {
       job.answer = done[0].text
     } else {

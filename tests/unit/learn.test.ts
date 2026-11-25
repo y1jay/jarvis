@@ -36,3 +36,35 @@ describe('학습에 쓸 말소리 고르기', () => {
     expect(o.includes(Buffer.from('OpusTags'))).toBe(true)
   })
 })
+
+describe('자동 학습 시점', () => {
+  it('쉬고 있고, 전원 연결, 말소리가 충분하면 스스로 학습', async () => {
+    const { shouldAutoTrain, AUTO_LEARN, MIN_SAMPLES } = await import('../../src/main/learn')
+    const base = { learning: true, training: false, busy: false, idleMs: AUTO_LEARN.idleMs, onBattery: false, usable: MIN_SAMPLES, lastUsable: 0 }
+    expect(shouldAutoTrain(base)).toBe(true)
+    expect(shouldAutoTrain({ ...base, usable: MIN_SAMPLES - 1 })).toBe(false)
+    expect(shouldAutoTrain({ ...base, busy: true })).toBe(false)
+    expect(shouldAutoTrain({ ...base, training: true })).toBe(false)
+    expect(shouldAutoTrain({ ...base, onBattery: true })).toBe(false)
+    expect(shouldAutoTrain({ ...base, idleMs: 60_000 })).toBe(false)
+    expect(shouldAutoTrain({ ...base, learning: false })).toBe(false)
+    // 한 번 학습한 뒤엔 60개 더 모일 때마다
+    expect(shouldAutoTrain({ ...base, usable: 100, lastUsable: 60 })).toBe(false)
+    expect(shouldAutoTrain({ ...base, usable: 120, lastUsable: 60 })).toBe(true)
+  })
+})
+
+describe('잘못된 정답은 배우지 않는다', () => {
+  it('[실제] 교정기가 뜻을 뒤집은 문장은 학습에서 뺀다', async () => {
+    const { usableSamples } = await import('../../src/main/learn')
+    const pk = Array.from({ length: 20 }, () => new Uint8Array(4))
+    const s = (heard: string, final?: string, logprob?: number) => ({ ts: 1, heard, final, corrected: !!final, logprob, packets: pk, sampleRate: 16000 })
+    const out = usableSamples([
+      s('평소에 카드가 커밍돼서 직접 해', '평소에 하던 대로 main 반영은 내가 직접 해'),
+      s('이랑 아이템 호텔 감소', '이랑 아이템 흡혈 감소'),
+      s('너 말할 때 너무 느려', undefined, -0.05),
+      s('자 베이징', undefined, -0.5)
+    ]).map((x) => x.text)
+    expect(out).toEqual(['이랑 아이템 흡혈 감소', '너 말할 때 너무 느려'])
+  })
+})

@@ -290,6 +290,33 @@ button { font: inherit; color: inherit; }
 .question-text { font-size: 14px; margin-bottom: 8px; white-space: pre-wrap; }
 .question-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .question-input input { flex: 1; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--line2); color: var(--text); padding: 6px 8px; border-radius: 4px; font: inherit; }
+/* 승인 요청 — 상자·어두운 덮개 없이 홀로그램 위에 글자로 (홀로그램은 그대로 보인다) */
+.holo-ask-back { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; pointer-events: auto; }
+.holo-ask { width: min(640px, 90%); max-height: 92%; overflow: auto; text-align: center; padding: 22px 26px; animation: holo-ask-in 0.35s ease-out both;
+  background: radial-gradient(ellipse at center, rgba(2, 10, 18, 0.8) 0%, rgba(2, 10, 18, 0.66) 50%, rgba(2, 10, 18, 0.3) 68%, transparent 80%); text-shadow: 0 0 4px #02070d, 0 0 10px #02070d; }
+@keyframes holo-ask-in { from { opacity: 0; transform: scale(0.96); filter: blur(3px); } to { opacity: 1; transform: none; filter: none; } }
+.holo-ask-kind { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.45em; color: var(--amber); text-shadow: 0 0 10px rgba(255, 182, 72, 0.8); animation: holo-ask-blink 1.8s infinite; }
+@keyframes holo-ask-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+.holo-ask-danger .holo-ask-kind { color: var(--red); text-shadow: 0 0 12px rgba(255, 77, 94, 0.9); }
+.holo-ask-title { font-size: 20px; font-weight: 700; margin: 8px 0 2px; color: #eaffff; text-shadow: 0 0 12px rgba(56, 214, 255, 0.9), 0 0 28px rgba(56, 214, 255, 0.4); }
+.holo-ask-from { color: #8fb4c4; font-size: 11px; margin-bottom: 12px; }
+.holo-ask .modal-voice { color: var(--teal); font-weight: 600; }
+.holo-ask-detail { text-align: left; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: #ffd479; text-shadow: 0 0 8px rgba(255, 212, 121, 0.55); white-space: pre-wrap; word-break: break-all;
+  display: inline-block; max-width: 100%; max-height: 260px; overflow: auto; margin: 0 auto 12px; padding: 0 4px; background: none; border: 0; }
+.holo-ask-danger .holo-ask-detail { color: #ff9aa5; text-shadow: 0 0 8px rgba(255, 122, 138, 0.55); }
+.holo-ask-image { width: 100%; max-height: 220px; object-fit: contain; margin-bottom: 10px; opacity: 0.92; border: 0; border-radius: 4px; box-shadow: 0 0 18px rgba(56, 214, 255, 0.35); }
+.holo-ask-reason { width: min(420px, 100%); margin: 0 auto 14px; display: block; text-align: center; background: transparent; border: 0; border-bottom: 1px solid var(--line2); color: var(--text); padding: 5px 8px; font: inherit; outline: none; }
+.holo-ask-reason::placeholder { color: #7fa3b3; }
+.holo-ask-reason:focus { border-bottom-color: var(--cyan); box-shadow: 0 6px 10px -8px rgba(56, 214, 255, 0.8); }
+.holo-ask-actions { display: flex; justify-content: center; gap: 18px; }
+.holo-ask-btn { min-width: 108px; padding: 8px 18px; border-radius: 999px; font: 600 14px var(--sans); letter-spacing: 0.2em; cursor: pointer; color: var(--cyan2);
+  background: rgba(2, 12, 20, 0.7); border: 1px solid var(--line2); text-shadow: 0 0 8px rgba(56, 214, 255, 0.8); transition: background 0.15s, box-shadow 0.15s; }
+.holo-ask-btn:hover:not(:disabled), .holo-ask-btn:focus-visible { background: rgba(56, 214, 255, 0.16); box-shadow: 0 0 18px rgba(56, 214, 255, 0.45); outline: none; }
+.holo-ask-ok { color: #7dffb0; border-color: rgba(125, 255, 176, 0.6); text-shadow: 0 0 8px rgba(125, 255, 176, 0.8); }
+.holo-ask-ok:hover:not(:disabled) { background: rgba(125, 255, 176, 0.14); box-shadow: 0 0 18px rgba(125, 255, 176, 0.45); }
+.holo-ask-ok-danger { color: #ff8f9c; border-color: rgba(255, 77, 94, 0.7); text-shadow: 0 0 8px rgba(255, 77, 94, 0.9); }
+.holo-ask-ok-danger:hover:not(:disabled) { background: rgba(255, 77, 94, 0.14); box-shadow: 0 0 18px rgba(255, 77, 94, 0.45); }
+.holo-ask-btn:disabled { opacity: 0.35; cursor: default; }
 .modal-image { width: 100%; max-height: 260px; object-fit: contain; border: 1px solid var(--line); border-radius: 4px; margin-bottom: 10px; background: #000; }
 .mic-meter { width: 160px; height: 4px; margin: 8px auto 0; background: rgba(56, 214, 255, 0.15); border-radius: 2px; overflow: hidden; }
 .mic-meter > div { height: 100%; background: var(--teal); box-shadow: 0 0 6px var(--teal); transition: width 0.08s; }
@@ -325,5 +352,9 @@ button { font: inherit; color: inherit; }
 .cf-del { color: #ff7a8a; text-shadow: 0 0 6px rgba(255, 122, 138, 0.45); }
 .cf-add { color: #7dffb0; text-shadow: 0 0 6px rgba(125, 255, 176, 0.5); }
 .cf-more, .cf-ctx { color: #8aa4b8; }
+.cf-cmd { color: #ffd479; margin-top: 10px; text-shadow: 0 0 8px rgba(255, 212, 121, 0.6); }
+.cf-cmd + .cf-cmd { margin-top: 0; }
+.cf-out { color: #a9bfd0; opacity: 0.85; }
+.cf-err { color: #ff8f9c; text-shadow: 0 0 6px rgba(255, 122, 138, 0.4); }
 
 .orb-code { font: 600 13px ui-monospace, Menlo, monospace; letter-spacing: -0.5px; }

@@ -85,6 +85,25 @@ describe('목소리 / 에뮬레이터 명령', () => {
   ])('%s', (t, action, platform, name, rest) => {
     expect(parseDeviceIntent(t)).toEqual({ action, platform, name, rest })
   })
+  it.each([
+    '시뮬레이터 실행해 줘',
+    '아이폰 시뮬레이터 좀 켜주세요',
+    '시뮬레이터 열어봐',
+    '에뮬레이터 시작해'
+  ])('시키는 말: %s', (t) => {
+    expect(parseDeviceIntent(t)?.action).toBe('start')
+  })
+  it.each([
+    // 실제로 있었던 일: 항의를 명령으로 알아듣고 시뮬레이터를 또 켰다
+    '한 수 배포를 네가 직접 하라니까 왜 시뮬레이터를 켜는 거야',
+    '시뮬레이터 켜지 마',
+    '시뮬레이터 켰어?',
+    '시뮬레이터 켜는 거 말고 배포해',
+    '에뮬레이터 띄우지 말라고',
+    '시뮬레이터 켜면 느려져'
+  ])('묻거나 말리는 말은 명령 아님: %s', (t) => {
+    expect(parseDeviceIntent(t)).toBeNull()
+  })
 })
 
 describe('iOS 시뮬레이터 목록 파싱', () => {
@@ -188,7 +207,28 @@ describe('코드 흐름 (바뀐 코드만)', () => {
       { kind: 'add', text: 'const b = 20' }
     ])
     expect(toFeedLines('Write', { file_path: 'x.ts', content: 'a\nb' }).filter((x) => x.kind === 'add')).toHaveLength(2)
-    expect(toFeedLines('Bash', { command: 'ls' })).toEqual([])
     expect(toFeedLines('Write', { file_path: 'big.ts', content: Array(300).fill('x').join('\n') }).pop()?.kind).toBe('more')
+    expect(toFeedLines('Read', { file_path: 'x.ts' })).toEqual([])
+  })
+
+  it('터미널 명령과 결과도 글자로', async () => {
+    const { toFeedLines, toFeedOutput, isShellTool } = await import('../../src/renderer/src/components/CodeFeed')
+    expect(toFeedLines('Bash', { command: 'pnpm test' })).toEqual([{ kind: 'cmd', text: 'pnpm test' }])
+    expect(toFeedLines('Bash', { command: '' })).toEqual([])
+    const long = toFeedLines('Bash', { command: Array(10).fill('echo hi').join('\n') })
+    expect(long.filter((x) => x.kind === 'cmd')).toHaveLength(6)
+    expect(long.pop()).toEqual({ kind: 'more', text: '… 명령 4줄 더' })
+    expect(isShellTool('Bash') && isShellTool('PowerShell') && !isShellTool('Edit')).toBe(true)
+    // 색 코드·빈 줄 제거, 마지막 12줄만
+    expect(toFeedOutput('\x1b[32m✓ 통과\x1b[0m\n\n  끝  \n', false)).toEqual([
+      { kind: 'out', text: '✓ 통과' },
+      { kind: 'out', text: '  끝' }
+    ])
+    const many = toFeedOutput(Array.from({ length: 30 }, (_, n) => `line ${n}`).join('\n'), true)
+    expect(many[0]).toEqual({ kind: 'more', text: '… 위로 18줄' })
+    expect(many).toHaveLength(13)
+    expect(many.at(-1)).toEqual({ kind: 'err', text: 'line 29' })
+    expect(toFeedOutput('', false)).toEqual([])
+    expect(toFeedOutput(undefined, false)).toEqual([])
   })
 })

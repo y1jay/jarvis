@@ -5,6 +5,8 @@
 //    JARVIS 는 공개키로 '잠그기'만 할 수 있고, 여는 건 암호를 아는 사람만 가능하다 (git 에 올려도 안전).
 // 2) 말투 학습 (텍스트, 아주 작음) — 자주 쓰는 단어(인식 힌트), 잘못 알아들은 말 → 실제로 뜻한 말(교정).
 //    JARVIS 가 매번 써야 하므로 OS 키체인(safeStorage)으로 잠근다 (이 맥의 이 사용자 계정만 열 수 있음).
+// 3) 자동 학습용 사본 (local/) — JARVIS 가 암호 없이 스스로 학습하려면 열 수 있어야 한다.
+//    이 맥 키체인에 든 기기 열쇠(AES-256-GCM)로 잠근다. git 백업(exportTo)에는 절대 넣지 않는다 — git 에는 암호로 잠긴 것만.
 import { createCipheriv, createDecipheriv, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, scryptSync, type KeyObject } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -107,16 +109,47 @@ export interface VaultStats {
   samples: number
   bytes: number
   limitBytes: number
+  /** 자동 학습용 사본 수 */
+  local?: number
 }
+
+function atomicWrite(path: string, data: Buffer): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const tmp = join(dirname(path), `.${Date.now()}-${randomBytes(3).toString('hex')}.tmp`)
+  writeFileSync(tmp, data)
+  renameSync(tmp, path)
+}
+
+/** 기기 열쇠로 잠그기/열기 (자동 학습용 사본) */
+export function sealLocal(plain: Buffer, key: Buffer): Buffer {
+  const iv = randomBytes(12)
+  const c = createCipheriv('aes-256-gcm', key, iv)
+  const body = Buffer.concat([c.update(plain), c.final()])
+  return Buffer.concat([LOCAL_MAGIC, iv, c.getAuthTag(), body])
+}
+export function openLocal(blob: Buffer, key: Buffer): Buffer {
+  if (!blob.subarray(0, 4).equals(LOCAL_MAGIC)) throw new Error('학습용 사본 형식이 아닙니다')
+  const d = createDecipheriv('aes-256-gcm', key, blob.subarray(4, 16))
+  d.setAuthTag(blob.subarray(16, 32))
+  return Buffer.concat([d.update(blob.subarray(32)), d.final()])
+}
+const LOCAL_MAGIC = Buffer.from('JVL1')
 
 export class VoiceVault {
   private info: VaultInfo | null = null
   constructor(
     private readonly dir: string,
-    private readonly limitBytes: () => number
+    private readonly limitBytes: () => number,
+    /** 자동 학습용 기기 열쇠 (키체인에서 꺼냄). 없으면 사본을 만들지 않는다 */
+    private readonly deviceKey: () => Buffer | null = () => null
   ) {
     const f = join(dir, 'vault.json')
     if (existsSync(f)) this.info = JSON.parse(readFileSync(f, 'utf8')) as VaultInfo
+  }
+
+  /** 말소리를 모을 수 있는지 (암호를 정했거나, 자동 학습용 기기 열쇠가 있으면) */
+  get collecting(): boolean {
+    return this.ready || !!this.deviceKey()
   }
 
   get ready(): boolean {
@@ -143,38 +176,86 @@ export class VoiceVault {
 
   /** 샘플 저장 (잠가서). 용량을 넘으면 오래된 것부터 지운다 — 교정된(잘못 알아들었던) 샘플은 가장 나중에 */
   add(s: VoiceSample): string | null {
-    if (!this.info) return null
-    const pub = Buffer.from(this.info.pub, 'base64')
-    const blob = seal(packSample(s), pub)
+    const key = this.deviceKey()
+    if (!this.info && !key) return null
     const d = new Date(s.ts)
-    const sub = join(this.dir, 'samples', `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`)
-    mkdirSync(sub, { recursive: true })
-    const name = `${s.ts}-${randomBytes(4).toString('hex')}${s.corrected ? '-c' : ''}.jvs`
-    const tmp = join(sub, `.${name}.tmp`)
-    writeFileSync(tmp, blob)
-    renameSync(tmp, join(sub, name))
+    const month = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`
+    const base = `${s.ts}-${randomBytes(4).toString('hex')}${s.corrected ? '-c' : ''}`
+    const packed = packSample(s)
+    // git 에 올라가는 보관함: 사용자 암호로만 열린다
+    if (this.info) atomicWrite(join(this.dir, 'samples', month, `${base}.jvs`), seal(packed, Buffer.from(this.info.pub, 'base64')))
+    // 자동 학습용 사본: 이 맥 키체인 열쇠
+    if (key) atomicWrite(join(this.dir, 'local', month, `${base}.jvl`), sealLocal(packed, key))
     this.prune()
-    return name
+    return `${base}.jvs`
   }
 
-  private files(): Array<{ path: string; size: number; corrected: boolean; ts: number }> {
-    const root = join(this.dir, 'samples')
+  /** 자동 학습용 사본 전부 (암호 없이 — 이 맥에서만) */
+  readLocal(): VoiceSample[] {
+    const key = this.deviceKey()
+    if (!key) return []
+    const out: VoiceSample[] = []
+    for (const f of this.files('local').sort((a, b) => a.ts - b.ts)) {
+      try {
+        out.push(unpackSample(openLocal(readFileSync(f.path), key)))
+      } catch {
+        /* 다른 기기 열쇠·손상 → 건너뜀 */
+      }
+    }
+    return out
+  }
+
+  /** 자동 학습용 사본 수 */
+  localCount(): number {
+    return this.files('local').length
+  }
+
+  /** 암호로 잠긴 말소리 중 학습용 사본이 없는 것 수 (암호를 한 번 받아 합칠 대상) */
+  missingLocal(): number {
+    const have = new Set(this.files('local').map((f) => f.name.replace(/\.jvl$/, '')))
+    return this.files('samples').filter((f) => !have.has(f.name.replace(/\.jvs$/, ''))).length
+  }
+
+  /** 암호로 잠긴 말소리를 학습용 사본으로 합친다 (암호를 한 번 받아서). 반환: 새로 합친 수 */
+  importToLocal(passphrase: string): number {
+    const key = this.deviceKey()
+    if (!key || !this.info || !this.check(passphrase)) throw new Error('암호가 맞지 않습니다')
+    const { priv, pub } = deriveKeys(passphrase, Buffer.from(this.info.salt, 'base64'))
+    const have = new Set(this.files('local').map((f) => f.name.replace(/\.jvl$/, '')))
+    let n = 0
+    for (const f of this.files('samples')) {
+      const base = f.name.replace(/\.jvs$/, '')
+      if (have.has(base)) continue
+      const month = f.path.split(/[\\/]/).slice(-2, -1)[0]
+      atomicWrite(join(this.dir, 'local', month, `${base}.jvl`), sealLocal(open(readFileSync(f.path), priv, pub), key))
+      n++
+    }
+    return n
+  }
+
+  private files(kind: 'samples' | 'local' = 'samples'): Array<{ path: string; name: string; size: number; corrected: boolean; ts: number }> {
+    const root = join(this.dir, kind)
+    const ext = kind === 'samples' ? '.jvs' : '.jvl'
     if (!existsSync(root)) return []
-    const out: Array<{ path: string; size: number; corrected: boolean; ts: number }> = []
+    const out: Array<{ path: string; name: string; size: number; corrected: boolean; ts: number }> = []
     for (const m of readdirSync(root)) {
       const sub = join(root, m)
       if (!statSync(sub).isDirectory()) continue
       for (const f of readdirSync(sub)) {
-        if (!f.endsWith('.jvs')) continue
+        if (!f.endsWith(ext)) continue
         const p = join(sub, f)
-        out.push({ path: p, size: statSync(p).size, corrected: f.endsWith('-c.jvs'), ts: Number(f.split('-')[0]) || 0 })
+        out.push({ path: p, name: f, size: statSync(p).size, corrected: f.endsWith(`-c${ext}`), ts: Number(f.split('-')[0]) || 0 })
       }
     }
     return out
   }
 
   prune(): number {
-    const files = this.files()
+    return this.pruneKind('samples') + this.pruneKind('local')
+  }
+
+  private pruneKind(kind: 'samples' | 'local'): number {
+    const files = this.files(kind)
     let total = files.reduce((a, f) => a + f.size, 0)
     const limit = this.limitBytes()
     if (total <= limit) return 0
@@ -192,7 +273,7 @@ export class VoiceVault {
 
   stats(): VaultStats {
     const files = this.files()
-    return { ready: this.ready, samples: files.length, bytes: files.reduce((a, f) => a + f.size, 0), limitBytes: this.limitBytes() }
+    return { ready: this.ready, samples: files.length, bytes: files.reduce((a, f) => a + f.size, 0), limitBytes: this.limitBytes(), local: this.localCount() }
   }
 
   /** 암호로 전부 열기 (사용자 확인용 도구에서만) */
@@ -208,7 +289,7 @@ export class VoiceVault {
   /** 모두 지우기 (사용자가 요청할 때만) */
   clearSamples(): number {
     let n = 0
-    for (const f of this.files()) {
+    for (const f of [...this.files('samples'), ...this.files('local')]) {
       unlinkSync(f.path)
       n++
     }

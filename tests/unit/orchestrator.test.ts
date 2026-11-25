@@ -194,3 +194,100 @@ describe('일상 행동은 일반 세션에서, 프로젝트 포커스는 유지
     expect(o.list().some((s) => s.projectDir === null)).toBe(true)
   })
 })
+
+/** 가짜 AI (끼어들기 지원): 차례가 도는 동안 들어온 말을 모아, 차례 끝 답에 같이 반영한다 */
+class SteerProvider implements AgentProvider {
+  readonly id: ProviderId = 'claude'
+  sends: string[] = []
+  steered: string[] = []
+  interrupted = 0
+  private busy = false
+  private finish: (() => void) | null = null
+  sessionId(): string | null {
+    return null
+  }
+  reset(): void {}
+  async interrupt(): Promise<void> {
+    this.interrupted++
+    this.finish?.()
+  }
+  steer(prompt: string): boolean {
+    if (!this.busy) return false
+    this.steered.push(prompt)
+    return true
+  }
+  async send(prompt: string, ctx: TurnContext): Promise<void> {
+    this.sends.push(prompt)
+    this.busy = true
+    await new Promise<void>((r) => {
+      this.finish = r
+      setTimeout(r, 300)
+    })
+    this.busy = false
+    const extra = this.steered.length ? ` + 끼어든 말 ${this.steered.length}개 반영` : ''
+    ctx.emit({ kind: 'result', text: `답: ${prompt.slice(0, 10)}${extra}`, isError: false })
+  }
+}
+
+describe('내 말이 1순위 — 작업 도중 새 말은 줄 서지 않고 바로 전달', () => {
+  const build = () => {
+    const p = new SteerProvider()
+    const jobs: JobInfo[] = []
+    const steers: Array<{ jobId?: string; fromJobId?: string }> = []
+    const o = new Orchestrator({
+      createProvider: () => p,
+      buildContext: (s, turnId, emit) => ({ turnId, cwd: s.projectDir ?? '/tmp/ws', permissionMode: 'acceptEdits', env: {}, emit, approve: async () => ({ approved: false }), audit: () => undefined }),
+      ask: async () => '',
+      defaultCwd: () => '/tmp/ws',
+      onSessions: () => undefined,
+      onJob: (j) => jobs.push(j),
+      onEvent: () => undefined,
+      onTurnStart: () => undefined,
+      onTurnDone: () => undefined,
+      onSteer: (e) => steers.push(e)
+    })
+    const job = (id: string, prompt: string): JobInfo => ({ id, prompt, status: 'planning', tasks: [], notes: [], via: 'voice', createdAt: 0 })
+    return { p, o, jobs, steers, job }
+  }
+
+  it('하던 작업을 끊지 않고 끼워 넣고, 합쳐진 답은 새 말의 답으로 한 번만', async () => {
+    const { p, o, steers, job } = build()
+    const a = job('A', '배포해 줘')
+    const b = job('B', '지금 어디까지 했어?')
+    const ra = o.runJob(a, a.prompt, 'claude', [])
+    await new Promise((r) => setTimeout(r, 80))
+    const rb = o.runJob(b, b.prompt, 'claude', [])
+    const [ja, jb] = await Promise.all([ra, rb])
+    // 새 차례를 만들지 않았다 (줄 서기 없음) — 지금 차례에 끼워 넣음
+    expect(p.sends).toHaveLength(1)
+    expect(p.steered).toHaveLength(1)
+    expect(p.steered[0]).toContain('지금 어디까지 했어?')
+    expect(p.steered[0]).toContain('1순위')
+    expect(p.interrupted).toBe(0)
+    expect(jb.answer).toContain('끼어든 말 1개 반영')
+    // A 는 조용히 (같은 답을 두 번 말하지 않게)
+    expect(ja.answer).toBe('')
+    expect(ja.notes).toContain('새 말씀을 먼저 반영했습니다')
+    expect(steers).toEqual([{ sessionId: expect.any(String), jobId: 'B', fromJobId: 'A', prompt: '지금 어디까지 했어?' }])
+  })
+
+  it('쉬고 있을 때는 평소처럼 새 차례', async () => {
+    const { p, o, job } = build()
+    const a = await o.runJob(job('A', '테스트 돌려'), '테스트 돌려', 'claude', [])
+    const b = await o.runJob(job('B', '커밋 메시지 보여줘'), '커밋 메시지 보여줘', 'claude', [])
+    expect(p.sends).toHaveLength(2)
+    expect(p.steered).toHaveLength(0)
+    expect(a.answer).toContain('답:')
+    expect(b.answer).toContain('답:')
+  })
+
+  it('사용자가 멈추면 멈춘 작업의 답은 말하지 않는다', async () => {
+    const { o, job } = build()
+    const ra = o.runJob(job('A', '긴 작업'), '긴 작업', 'claude', [])
+    await new Promise((r) => setTimeout(r, 50))
+    await o.interruptAll()
+    const ja = await ra
+    expect(ja.answer).toBe('')
+    expect(ja.notes).toContain('말씀대로 멈췄습니다')
+  })
+})

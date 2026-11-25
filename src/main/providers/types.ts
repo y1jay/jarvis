@@ -25,6 +25,8 @@ export interface AgentProvider {
   /** 첫 요청 지연을 줄이려 미리 띄워 두기 (선택) */
   warm?(ctx: TurnContext): void
   interrupt(): Promise<void>
+  /** 차례가 도는 중에 사용자 말을 끊지 않고 바로 끼워 넣기 (지원하면 true) */
+  steer?(prompt: string): boolean
   /** 대화 초기화 (새 세션) */
   reset(): void
   sessionId(): string | null

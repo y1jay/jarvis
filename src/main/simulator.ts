@@ -11,6 +11,17 @@ function run(cmd: string, args: string[], timeout = 60000): Promise<{ code: numb
   })
 }
 
+/**
+ * 맥의 Simulator 앱이 이미 켜져 있으면, 기기를 부팅할 때 바깥에 기기 창을 하나 더 띄운다 (JARVIS 팝업과 중복).
+ * 그 앱을 숨긴다 — 기기는 그대로 돌아가고 화면은 JARVIS 팝업으로만 본다. 앱이 없으면 아무것도 안 한다.
+ */
+export const HIDE_SIMULATOR_APP = 'tell application "System Events" to if exists process "Simulator" then set visible of process "Simulator" to false'
+export async function hideSimulatorApp(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false
+  const r = await run('osascript', ['-e', HIDE_SIMULATOR_APP], 8000)
+  return r.code === 0
+}
+
 export interface SimDevice {
   udid: string
   name: string
@@ -79,6 +90,9 @@ export class IosSimulator {
       this.bootedByJarvis.add(udid)
     }
     await run('xcrun', ['simctl', 'bootstatus', udid, '-b'], 240000)
+    // 바깥 Simulator 창은 숨긴다 (창이 조금 늦게 뜨는 경우가 있어 한 번 더)
+    void hideSimulatorApp()
+    setTimeout(() => void hideSimulatorApp(), 1500)
     this.udid = udid
     this.name = dev.name
     // 스케일 계산: 스크린샷 픽셀 ÷ 루트 요소 포인트 폭
